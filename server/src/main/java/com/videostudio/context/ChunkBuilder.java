@@ -1,0 +1,126 @@
+package com.videostudio.context;
+
+import com.videostudio.common.Texts;
+import com.videostudio.config.AgentProperties;
+import com.videostudio.domain.ContextChunk;
+import com.videostudio.domain.TranscriptSegment;
+import com.videostudio.domain.VisualEvidence;
+
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Set;
+
+/**
+ * 把转写与画面证据按固定窗口（默认 5 分钟）聚合成「上下文块」。
+ * <p>块是检索与生成的基本单位：比句子大，能承载一整个话题；比整片小，能精确引用时间戳。
+ */
+public final class ChunkBuilder {
+
+    private ChunkBuilder() {
+    }
+
+    public static List<ContextChunk> build(List<TranscriptSegment> transcripts, List<VisualEvidence> visuals,
+                                           long durationMs, AgentProperties props) {
+        long window = props.chunkMillis();
+        long total = Math.max(durationMs, 1);
+        List<ContextChunk> chunks = new ArrayList<>();
+        int index = 0;
+        for (long start = 0; start < total; start += window) {
+            long from = start;
+            long to = Math.min(start + window, total);
+            List<TranscriptSegment> ts = transcripts.stream()
+                    .filter(s -> overlaps(s.startMs(), s.endMs(), from, to))
+                    .sorted(Comparator.comparingLong(TranscriptSegment::startMs))
+                    .toList();
+            List<VisualEvidence> vs = visuals.stream()
+                    .filter(v -> v.timeMs() >= from && v.timeMs() < to)
+                    .sorted(Comparator.comparingLong(VisualEvidence::timeMs))
+                    .toList();
+            if (ts.isEmpty() && vs.isEmpty()) {
+                index++;
+                continue;
+            }
+            String transcriptText = joinTranscript(ts);
+            String ocrText = joinOcr(vs);
+            List<String> keywords = Texts.keywords(transcriptText, 12);
+            List<String> visualKeywords = Texts.keywords(ocrText, 10);
+            String summary = summarize(transcriptText, ocrText, keywords);
+            chunks.add(new ContextChunk(index, from, to, summary, keywords, visualKeywords,
+                    transcriptText, ocrText, List.of(), 0d));
+            index++;
+        }
+        return chunks;
+    }
+
+    private static boolean overlaps(long aStart, long aEnd, long bStart, long bEnd) {
+        return aStart < bEnd && aEnd > bStart;
+    }
+
+    private static String joinTranscript(List<TranscriptSegment> segments) {
+        StringBuilder sb = new StringBuilder();
+        for (TranscriptSegment s : segments) {
+            if (Texts.isBlank(s.text())) {
+                continue;
+            }
+            sb.append(s.bracket()).append(' ').append(s.text().strip()).append('\n');
+            if (sb.length() > 12_000) {
+                sb.append("…（本段其余转写已裁剪）\n");
+                break;
+            }
+        }
+        return sb.toString().strip();
+    }
+
+    private static String joinOcr(List<VisualEvidence> visuals) {
+        StringBuilder sb = new StringBuilder();
+        Set<String> seen = new LinkedHashSet<>();
+        for (VisualEvidence v : visuals) {
+            if (Texts.isBlank(v.ocrText())) {
+                continue;
+            }
+            String normalized = Texts.oneLine(v.ocrText(), 400);
+            if (!seen.add(normalized)) {
+                continue;
+            }
+            sb.append(v.bracket()).append(' ').append(normalized).append('\n');
+            if (sb.length() > 6_000) {
+                sb.append("…（本段其余画面文字已裁剪）\n");
+                break;
+            }
+        }
+        return sb.toString().strip();
+    }
+
+    /** 无模型时的确定性摘要：取首句 + 关键词，保证离线也有可用内容 */
+    private static String summarize(String transcript, String ocr, List<String> keywords) {
+        List<String> parts = new ArrayList<>();
+        if (!Texts.isBlank(transcript)) {
+            String firstSentence = firstSentence(transcript);
+            if (!firstSentence.isBlank()) {
+                parts.add(firstSentence);
+            }
+        }
+        if (!keywords.isEmpty()) {
+            parts.add("关键词：" + String.join("、", keywords.subList(0, Math.min(6, keywords.size()))));
+        }
+        if (!Texts.isBlank(ocr) && parts.size() < 2) {
+            parts.add("画面文字：" + Texts.oneLine(ocr, 120));
+        }
+        return String.join("；", parts);
+    }
+
+    private static String firstSentence(String text) {
+        String cleaned = text.replaceAll("\\[\\d{1,2}:\\d{2}(?::\\d{2})?\\]", " ").replaceAll("\\s+", " ").strip();
+        int cut = -1;
+        for (char c : new char[]{'。', '！', '？', '.', '!', '?', '\n'}) {
+            int idx = cleaned.indexOf(c);
+            if (idx > 0 && (cut < 0 || idx < cut)) {
+                cut = idx;
+            }
+        }
+        String sentence = cut > 0 ? cleaned.substring(0, cut + 1) : cleaned;
+        return Texts.oneLine(sentence, 160);
+    }
+}
