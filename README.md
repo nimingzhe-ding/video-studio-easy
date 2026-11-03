@@ -345,3 +345,26 @@ Critic 会用确定性规则去核对，这是「总结工具」和「可信分�
 ## License
 
 MIT
+
+---
+
+## Ubuntu / 容器内自测
+
+在无显示器的服务器上可以只跑后端 + 命令行验证，不需要浏览器：
+
+```bash
+# 1. 上传
+curl -s -F "file=@demo.mp4" http://127.0.0.1:9090/api/media
+
+# 2. 提交分析（返回任务 id）
+curl -s -X POST http://127.0.0.1:9090/api/jobs \
+  -H 'Content-Type: application/json' \
+  -d '{"assetId":1,"mode":"LEARNING","goal":"整理成可复习的笔记"}'
+
+# 3. 看进度（SSE）
+curl -N http://127.0.0.1:9090/api/jobs/1/stream
+
+# 4. 取报告
+curl -s http://127.0.0.1:9090/api/jobs/1/report/markdown
+curl -o report.docx http://127.0.0.1:9090/api/jobs/1/report/docx
+```
