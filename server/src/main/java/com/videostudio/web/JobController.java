@@ -1,0 +1,115 @@
+package com.videostudio.web;
+
+import com.videostudio.common.ApiException;
+import com.videostudio.common.ApiResponse;
+import com.videostudio.domain.AnalysisJob;
+import com.videostudio.domain.AnalysisMode;
+import com.videostudio.service.JobService;
+import com.videostudio.repository.JobEventRepository;
+import com.videostudio.repository.JobRepository;
+import com.videostudio.repository.ReportRepository;
+import com.videostudio.repository.TranscriptRepository;
+import com.videostudio.repository.VisualRepository;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+/** 分析任务接口：提交、查询、取消、事件回放、证据与报告 */
+@RestController
+@RequestMapping("/api/jobs")
+public class JobController {
+
+    private final JobService jobService;
+    private final JobRepository jobRepository;
+    private final JobEventRepository eventRepository;
+    private final ReportRepository reportRepository;
+    private final TranscriptRepository transcriptRepository;
+    private final VisualRepository visualRepository;
+
+    public JobController(JobService jobService, JobRepository jobRepository, JobEventRepository eventRepository,
+                         ReportRepository reportRepository, TranscriptRepository transcriptRepository,
+                         VisualRepository visualRepository) {
+        this.jobService = jobService;
+        this.jobRepository = jobRepository;
+        this.eventRepository = eventRepository;
+        this.reportRepository = reportRepository;
+        this.transcriptRepository = transcriptRepository;
+        this.visualRepository = visualRepository;
+    }
+
+    public record SubmitRequest(long assetId, String goal, String mode, String title) {
+    }
+
+    @PostMapping
+    public ApiResponse<AnalysisJob> submit(@RequestBody SubmitRequest request) {
+        if (request.assetId() <= 0) {
+            throw new ApiException("缺少 assetId");
+        }
+        AnalysisMode mode = AnalysisMode.of(request.mode());
+        return ApiResponse.success(jobService.submit(request.assetId(), mode, request.goal(), request.title()));
+    }
+
+    @GetMapping
+    public ApiResponse<List<AnalysisJob>> list(@RequestParam(defaultValue = "50") int limit) {
+        return ApiResponse.success(jobRepository.list(Math.max(1, Math.min(200, limit))));
+    }
+
+    @GetMapping("/{id}")
+    public ApiResponse<Map<String, Object>> detail(@PathVariable long id) {
+        AnalysisJob job = jobRepository.find(id).orElseThrow(() -> ApiException.notFound("任务不存在: " + id));
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("job", job);
+        body.put("report", reportRepository.findByJob(id).orElse(null));
+        body.put("events", eventRepository.list(id, 0, 200));
+        return ApiResponse.success(body);
+    }
+
+    @GetMapping("/{id}/events")
+    public ApiResponse<?> events(@PathVariable long id, @RequestParam(defaultValue = "0") long after) {
+        return ApiResponse.success(eventRepository.list(id, after, 500));
+    }
+
+    @GetMapping("/{id}/report")
+    public ApiResponse<?> report(@PathVariable long id) {
+        return ApiResponse.success(reportRepository.findByJob(id)
+                .orElseThrow(() -> ApiException.notFound("该任务还没有生成报告")));
+    }
+
+    @GetMapping("/{id}/transcript")
+    public ApiResponse<?> transcript(@PathVariable long id, @RequestParam(defaultValue = "0") int from,
+                                     @RequestParam(defaultValue = "2000") int size) {
+        List<?> all = transcriptRepository.listByJob(id);
+        int start = Math.max(0, Math.min(from, all.size()));
+        int end = Math.min(all.size(), start + Math.max(1, size));
+        return ApiResponse.success(Map.of("total", all.size(), "items", all.subList(start, end)));
+    }
+
+    @GetMapping("/{id}/evidence")
+    public ApiResponse<?> evidence(@PathVariable long id) {
+        return ApiResponse.success(visualRepository.listByJob(id));
+    }
+
+    @PostMapping("/{id}/cancel")
+    public ApiResponse<Map<String, Object>> cancel(@PathVariable long id) {
+        boolean canceled = jobService.cancel(id);
+        return ApiResponse.success(Map.of("canceled", canceled));
+    }
+
+    public record ReanalyzeRequest(String goal, String mode) {
+    }
+
+    @PostMapping("/{id}/reanalyze")
+    public ApiResponse<AnalysisJob> reanalyze(@PathVariable long id, @RequestBody(required = false) ReanalyzeRequest body) {
+        String goal = body == null ? null : body.goal();
+        AnalysisMode mode = body == null || body.mode() == null ? null : AnalysisMode.of(body.mode());
+        return ApiResponse.success(jobService.reanalyze(id, goal, mode));
+    }
+}
