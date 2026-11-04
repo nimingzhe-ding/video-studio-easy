@@ -83,6 +83,67 @@ curl -F "file=@demo.mp4" http://127.0.0.1:9090/api/media
 
 ---
 
+## 1.5 分片上传（大文件 / 断点续传）
+
+超过 32 MB 的文件建议走分片；前端会自动选择，也可以直接调接口。
+
+### `GET /api/uploads/policy`
+
+返回当前生效的分片大小，避免前端写死。
+
+```json
+{ "ok": true, "data": { "chunkSize": 8388608 } }
+```
+
+### `POST /api/uploads` 创建/复用会话
+
+```json
+{ "uploadId": "up-1a2b3c4d-43732475", "name": "lecture.mp4", "totalBytes": 43732475 }
+```
+
+`uploadId` 由客户端生成并保持稳定（前端用「文件名 + 大小 + 修改时间」派生）。
+同一个 `uploadId` 重复调用是幂等的：已上传的分片不会被重置，
+响应里的 `receivedIndexes` 就是断点续传要跳过的片。
+
+```json
+{
+  "ok": true,
+  "data": {
+    "uploadId": "up-1a2b3c4d-43732475", "name": "lecture.mp4",
+    "totalBytes": 43732475, "totalChunks": 6, "chunkSize": 8388608,
+    "received": 2, "receivedBytes": 16777216, "percent": 38,
+    "finished": false, "assetId": null,
+    "receivedIndexes": [0, 1], "missingIndexes": [2, 3, 4, 5]
+  }
+}
+```
+
+### `PUT /api/uploads/{uploadId}/chunks/{index}` 上传一片
+
+`multipart/form-data`，字段名 `file`。重复上传同一片是幂等的。
+
+### `POST /api/uploads/{uploadId}/complete` 合并
+
+- 缺片时返回 **409**，`message` 里带缺失序号，前端补传后重试即可；
+- 合并后校验字节数与声明一致，再搬进 `data/media/{assetId}/`；
+- 同一个会话重复调用返回 `"reused": true` 与同一个 `assetId`。
+
+```json
+{ "ok": true, "data": { "reused": false, "assetId": 6, "media": { "id": 6, "name": "lecture.mp4", "durationMs": 76060 } } }
+```
+
+### `GET /api/uploads/{uploadId}` 查询进度
+
+返回结构同创建会话，可随时刷新 `receivedIndexes`。
+
+### `DELETE /api/uploads/{uploadId}` 取消
+
+删除会话记录与已落盘的分片。
+
+> 未完成的会话默认保留 24 小时，由 `UploadJanitor` 每小时清理一次。
+
+---
+
 ## 2. 分析任务
 
 ### `POST /api/jobs` 提交

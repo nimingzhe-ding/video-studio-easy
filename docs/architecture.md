@@ -43,6 +43,8 @@
 
 ### 2.1 上传与探测
 
+小于 32 MB 走一次性 multipart；更大的文件走分片（见 2.1.1）。
+
 ```
 POST /api/media (multipart)
   → MediaIngestService.ingest
@@ -55,6 +57,31 @@ POST /api/media (multipart)
 
 > 踩坑记录：最初只写了 insert 占位、没有回写 `storage_path`，导致流水线拿到空字符串去 `Path.of("")`，
 > 报 `ffprobe 解析失败: 退出码 1；: No such file or directory`。现在落盘后必须回写。
+
+#### 2.1.1 分片上传
+
+```
+POST /api/uploads {uploadId, name, totalBytes}
+  → 校验上限 → totalChunks = ceil(totalBytes / chunkSize)
+  → 同一 uploadId 但大小变了 → 清空旧分片重新开始（幂等）
+PUT  /api/uploads/{id}/chunks/{index}   # 每片先写 .tmp 再 Files.move 原子改名
+POST /api/uploads/{id}/complete
+  → 查缺片，缺则 409 并返回缺失序号（前端补传后重试）
+  → 按序号拼接 → 校验字节数 → Files.move 进 media/{assetId}/source{ext}
+  → MediaIngestService.ingestFile（探测、回填派生字段）
+  → markFinished + 删除整个 uploads/{uploadId} 目录
+```
+
+设计取舍：
+
+- **`uploadId` 由客户端派生**（文件名 + 大小 + 修改时间），所以刷新页面、换标签页都能接上同一个会话，
+  服务端不需要额外的「查找我的上传」接口。
+- **进度用真实字节算**：`SELECT COALESCE(SUM(size_bytes),0) FROM upload_chunk`，
+  早期版本用「分片数 × chunkSize」估算，最后一片必然虚高。
+- **幂等靠 `upload_chunk` 主键**：`(upload_id, chunk_index)` 冲突就覆盖，
+  `received` 只在「本来没有这一片」时才累加，所以网络重试不会让计数虚增。
+- **已完成的会话记录不立刻删**：`complete` 重试时还要靠它返回同一个 `assetId`；
+  只把磁盘目录回收，记录交给 `UploadJanitor` 在保留期后清掉。
 
 ### 2.2 分析流水线
 
@@ -134,12 +161,21 @@ select = eq(n,0)                                   # 首帧必取
 ### 3.3 语音识别：云端优先 + 本地回退
 
 ```
-for each 60s slice:
-    try 云端 /audio/transcriptions (OpenAI 兼容, 最多 2 次)
-    on failure → whisper-cli -m model -f slice -oj
-    合并：word 级时间戳 + 片偏移 → 全局毫秒
+一次 ffmpeg -f segment 切成 60s 片段（-segment_list csv 顺便拿到每片起止时间）
+→ 线程池并发转写（asr-concurrency，默认 3）
+    for each slice: try 云端 /audio/transcriptions (最多 2 次)
+                    on failure → whisper-cli -m model -f slice -oj
+→ 按提交顺序 future.get() 收集，再按 startMs 排序
+→ word 级时间戳 + 片偏移 → 全局毫秒
 最后 merge()：间隔 < 800ms 且前句 < 80 字的碎片合并
 ```
+
+两个细节：
+
+- 切片从「每片一个 ffmpeg 进程」改成**一次** `-f segment`：
+  76 秒音频从 4 次进程降到 1 次（0.054s），10 分钟音频同样 0.054s。
+- 并发**不能**改变结果：收集时严格按提交顺序 `get()`，再按 `startMs` 排序，
+  所以 `ASR_CONCURRENCY=1` 与 `=3` 的转写文本逐字相同（实测 27 段一致）。
 
 > 关键坑：`whisper-cli` 带 `-nt`（不打印时间戳）时，`-oj` 输出的 `transcription[].offsets`
 > 会塌成整片（60 秒只给一条 `from=0, to=29960`），必须去掉 `-nt`。
@@ -213,6 +249,10 @@ ReportComposer.markdown → 落库 + docx
 ## 5. 并发与恢复
 
 - `JobService` 用固定 2 线程的守护线程池，`ConcurrentHashMap<Long, Future<?>>` 记录运行中任务
+- 任务内部还有两级并发：`asr-concurrency`（转写）与 `ocr-concurrency`（画面文字），默认都是 3
+- 画面证据是「串行指纹快筛 → 并行 OCR → 串行文本判重」三段式：
+  去重依赖前一帧的状态，所以只有 OCR 这一步能并行
+- 分片上传的清理交给 `UploadJanitor`（默认每小时第 17 分），清理未完成会话与残留目录
 - 启动时 `jobRepository.failZombies` 把上次进程崩溃遗留的 `PENDING` / `RUNNING` 标为失败
 - 取消：`cancel` 先置 `CANCELED` 再 `future.cancel(true)`，流水线在下个阶段检查状态
 - SSE 与流水线解耦：前端刷新、断线重连都不影响任务本身
