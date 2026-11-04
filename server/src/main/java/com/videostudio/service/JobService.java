@@ -30,12 +30,14 @@ public class JobService {
 
     private final JobRepository jobRepository;
     private final AnalysisPipeline pipeline;
+    private final ModeRouter modeRouter;
     private final ExecutorService executor;
     private final Map<Long, Future<?>> running = new ConcurrentHashMap<>();
 
-    public JobService(JobRepository jobRepository, AnalysisPipeline pipeline) {
+    public JobService(JobRepository jobRepository, AnalysisPipeline pipeline, ModeRouter modeRouter) {
         this.jobRepository = jobRepository;
         this.pipeline = pipeline;
+        this.modeRouter = modeRouter;
         AtomicInteger counter = new AtomicInteger();
         this.executor = Executors.newFixedThreadPool(2, runnable -> {
             Thread thread = new Thread(runnable, "analysis-" + counter.incrementAndGet());
@@ -44,9 +46,16 @@ public class JobService {
         });
     }
 
+    /**
+     * 提交分析任务。
+     *
+     * @param mode 为 null 或 AUTO 时走 {@link ModeRouter} 自动判定
+     */
     public AnalysisJob submit(long assetId, AnalysisMode mode, String goal, String title) {
-        String focus = goal == null || goal.isBlank() ? defaultGoal(mode) : goal.strip();
-        long jobId = jobRepository.insert(assetId, mode, title, focus);
+        RouteResult decision = resolveMode(mode, goal);
+        String focus = goal == null || goal.isBlank() ? defaultGoal(decision.mode()) : goal.strip();
+        long jobId = jobRepository.insert(assetId, decision.mode(), decision.source(), decision.reason(),
+                title, focus);
         submit(jobId, assetId);
         return jobRepository.find(jobId).orElseThrow();
     }
@@ -57,10 +66,34 @@ public class JobService {
         if (old.status().running()) {
             throw ApiException.conflict("当前任务仍在执行，请稍后再试");
         }
-        long newId = jobRepository.insert(old.assetId(), mode == null ? old.mode() : mode,
-                old.title(), goal == null || goal.isBlank() ? old.focus() : goal.strip());
+        String focus = goal == null || goal.isBlank() ? old.focus() : goal.strip();
+        // 重跑未指定模式时沿用原任务模式（而不是重新路由），避免「换个目标」意外改掉文档结构
+        RouteResult decision = mode == null
+                ? new RouteResult(old.mode(),
+                        old.modeSource() == null ? AnalysisJob.MODE_SOURCE_USER : old.modeSource(),
+                        old.modeReason())
+                : new RouteResult(mode, AnalysisJob.MODE_SOURCE_USER, null);
+        long newId = jobRepository.insert(old.assetId(), decision.mode(), decision.source(), decision.reason(),
+                old.title(), focus);
         submit(newId, old.assetId());
         return jobRepository.find(newId).orElseThrow();
+    }
+
+    /**
+     * 用户显式指定模式时直接采用（来源 USER）；未指定或指定 AUTO 时交给路由。
+     * <p>路由永远返回具体模式，因此落库的 mode 不会是「待定」。
+     */
+    private RouteResult resolveMode(AnalysisMode mode, String goal) {
+        if (mode != null) {
+            return new RouteResult(mode, AnalysisJob.MODE_SOURCE_USER, null);
+        }
+        ModeRouter.Decision routed = modeRouter.route(goal);
+        return new RouteResult(routed.mode(), routed.byModel() ? AnalysisJob.MODE_SOURCE_AUTO
+                : AnalysisJob.MODE_SOURCE_RULE, routed.reason());
+    }
+
+    /** 路由结果 + 来源标记，避免在调用点重复拼字符串 */
+    private record RouteResult(AnalysisMode mode, String source, String reason) {
     }
 
     private void submit(long jobId, long assetId) {

@@ -21,6 +21,8 @@ CREATE TABLE IF NOT EXISTS analysis_job (
     id            BIGINT AUTO_INCREMENT PRIMARY KEY,
     asset_id      BIGINT        NOT NULL,
     mode          VARCHAR(32)   NOT NULL,
+    mode_source   VARCHAR(16),
+    mode_reason   VARCHAR(255),
     title         VARCHAR(512),
     focus         CLOB,
     status        VARCHAR(16)   NOT NULL,

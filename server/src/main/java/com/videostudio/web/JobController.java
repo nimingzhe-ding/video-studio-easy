@@ -57,8 +57,27 @@ public class JobController {
         if (request.assetId() <= 0) {
             throw new ApiException("缺少 assetId");
         }
-        AnalysisMode mode = AnalysisMode.of(request.mode());
+        AnalysisMode mode = parseMode(request.mode());
         return ApiResponse.success(jobService.submit(request.assetId(), mode, request.goal(), request.title()));
+    }
+
+    /**
+     * 模式解析：空值或 AUTO 返回 null，交给 {@link com.videostudio.service.ModeRouter} 判定；
+     * 其余按枚举名严格匹配，非法值直接报错而不是静默变成「通用理解」。
+     */
+    private static AnalysisMode parseMode(String raw) {
+        if (raw == null || raw.isBlank() || "AUTO".equalsIgnoreCase(raw.strip())) {
+            return null;
+        }
+        String value = raw.strip().toUpperCase();
+        for (AnalysisMode mode : AnalysisMode.values()) {
+            if (mode.name().equals(value)) {
+                return mode;
+            }
+        }
+        // AnalysisMode.of() 会把非法值静默吞成 GENERAL，这里必须显式报错，
+        // 否则客户端拼错模式名时会得到一份「看起来正常」但其实用错模板的报告
+        throw new ApiException("不支持的分析模式: " + raw);
     }
 
     @GetMapping
@@ -113,7 +132,7 @@ public class JobController {
     @PostMapping("/{id}/reanalyze")
     public ApiResponse<AnalysisJob> reanalyze(@PathVariable long id, @RequestBody(required = false) ReanalyzeRequest body) {
         String goal = body == null ? null : body.goal();
-        AnalysisMode mode = body == null || body.mode() == null ? null : AnalysisMode.of(body.mode());
+        AnalysisMode mode = body == null ? null : parseMode(body.mode());
         return ApiResponse.success(jobService.reanalyze(id, goal, mode));
     }
 

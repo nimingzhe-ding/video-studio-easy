@@ -20,6 +20,8 @@ public class JobRepository {
             rs.getLong("id"),
             rs.getLong("asset_id"),
             AnalysisMode.of(rs.getString("mode")),
+            rs.getString("mode_source"),
+            rs.getString("mode_reason"),
             rs.getString("title"),
             rs.getString("focus"),
             JobStatus.valueOf(rs.getString("status")),
@@ -38,14 +40,15 @@ public class JobRepository {
         this.jdbc = jdbc;
     }
 
-    public long insert(long assetId, AnalysisMode mode, String title, String focus) {
+    public long insert(long assetId, AnalysisMode mode, String modeSource, String modeReason,
+                       String title, String focus) {
         return Sql.insert(jdbc, """
-                INSERT INTO analysis_job (asset_id, mode, title, focus, status, stage, progress,
-                                          degraded, created_at, updated_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?)
+                INSERT INTO analysis_job (asset_id, mode, mode_source, mode_reason, title, focus,
+                                          status, stage, progress, degraded, created_at, updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
-                assetId, mode.name(), title, focus, JobStatus.PENDING.name(), JobStage.QUEUED.name(), 0,
-                false, Sql.now(), Sql.now());
+                assetId, mode.name(), modeSource, modeReason, title, focus,
+                JobStatus.PENDING.name(), JobStage.QUEUED.name(), 0, false, Sql.now(), Sql.now());
     }
 
     public Optional<AnalysisJob> find(long id) {
