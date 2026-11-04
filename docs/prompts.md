@@ -89,7 +89,21 @@
 `mode-router.md` 明确要求「判断依据是用户目标的真实意图，而非字面关键词」，
 并列出了每个模式的定位；无法归类时回落到 `GENERAL`。
 
-> 当前版本前端让用户显式选模式，路由提示词已就绪但尚未接入自动判别（预留能力）。
+调用点在 `service/ModeRouter.java`：前端选「自动判断」时 `mode` 传空，后端在任务落库前调一次模型
+（`temperature = 0.0`，`max_tokens = 200`），只认带引号的 `"LEARNING"` 这种严格命中——
+宽松匹配会让模型在解释里顺带提到别的模式名而被误判。
+
+失败路径三层，全都不阻断主流程：
+
+| 情况 | 结果 |
+| --- | --- |
+| 模型没开（无 key） | 关键词规则 `guess(goal)`，命中数最高者胜出，`mode_source = RULE` |
+| 模型超时 / 报错 / 返回非法值 | 同上，只打一条 warn |
+| 关键词也全不命中 | `GENERAL`，理由「目标较为通用，选通用理解」 |
+
+判定结果与理由一起写进任务的 `mode_source` / `mode_reason`，界面显示成「学习笔记 · 规则判定」。
+另外注意 `AnalysisMode.of()` 会把非法值静默吞成 `GENERAL`，所以控制器层没有用它来做校验——
+拼错的模式名会明确返回 400。
 
 ## 10. 调参建议
 
@@ -100,3 +114,6 @@
 | 校验太严导致反复重写 | `EvidenceValidator` 的 `±2000ms` OCR 容差，或 `agent.max-rounds` |
 | 摘要太长/太短 | `chunk-summary.md` 的 200 字限制 + `ChunkEnricher` 的 `max_tokens=260` |
 | 追问太啰嗦 | `follow-up.md` 的 400 字限制 + `FollowUpService` 的 `max_tokens=900` |
+| 上下文不够用 | `agent.max-context-chars`（默认 24000）；注意超预算的条目会被跳过而不是截断 |
+| 多轮补充不到证据 | `ContextRenderer.recall` 的容差下限（当前 60 秒）与 `critiqueQuery` 的拼接口径 |
+| 模式判不准 | `ModeRouter.KEYWORDS` 的关键词表，或 `mode-router.md` 的模式定位描述 |

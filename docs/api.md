@@ -158,8 +158,28 @@ curl -F "file=@demo.mp4" http://127.0.0.1:9090/api/media
 ```
 
 - `goal` 可空，空则按模式使用默认目标
-- `mode` ∈ `GENERAL` | `LEARNING` | `REVIEW` | `CREATION`
+- `mode` ∈ `GENERAL` | `LEARNING` | `REVIEW` | `CREATION`，也可留空或传 `"AUTO"` 交给后端自动判定
+- `mode` 传了非法值会返回 400（不会静默变成「通用理解」）
 - 返回创建好的 `AnalysisJob`，任务在后台线程池中异步执行
+
+`AnalysisJob` 上额外有两个字段说明模式是怎么来的：
+
+| 字段 | 取值 | 含义 |
+| --- | --- | --- |
+| `modeSource` | `USER` | 调用方显式指定 |
+| | `AUTO` | 模型根据 `goal` 判定 |
+| | `RULE` | 模型不可用或没给出合法值，走关键词规则兜底 |
+| `modeReason` | 中文短句 | 判定理由，如「目标偏向知识梳理与复习，选学习笔记」 |
+
+```json
+{
+  "id": 14, "mode": "LEARNING", "modeSource": "RULE",
+  "modeReason": "目标偏向知识梳理与复习，选学习笔记", "status": "PENDING"
+}
+```
+
+> 同一素材上的第二个任务会自动复用此前任务已提取的转写、画面文字与分块，
+> 只重新做检索与分析。事件流里能看到 `复用任务 9 的转写（3 段），跳过语音识别` 这类日志。
 
 四种模式的定位：
 

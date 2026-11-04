@@ -209,6 +209,21 @@ critique(draft) = 模型 verdict ⇊ EvidenceValidator.verify
 ReportComposer.markdown → 落库 + docx
 ```
 
+**校验未通过时不是简单重写**。模型缺的通常是证据而不是措辞，所以第二轮开始前会做两件事：
+
+1. **按时间戳回捞**：`ContextRenderer.recall(critique.requiredTimestamps, 全量证据, margin)`
+   从**该素材的全部**转写/OCR 里把 Critic 点名的时间点附近片段捞回来（`margin = max(60s, 片段时长)`，
+   容差要留够是因为模型给的时刻常落在片段边界外几百毫秒）；
+2. **按缺口重检索**：把「目标 + feedback + missingRequirements + unsupportedClaims」拼成一句新的查询再走一次
+   `HybridRetriever.search`，命中结果并入证据集（去重后按时间排序）。
+
+两条都只扩大证据、不改结论，所以「多轮」不会靠改写措辞来骗过校验。
+
+**上下文预算按条目选入**（`ContextRenderer.render`）：超预算的条目被**跳过并继续尝试后面的条目**，
+而不是遇到超长就 `break`。片段长度差异很大（一句 20 字 vs 一整段 600 字），一旦 break，
+一条长片段就能让后面几十条短证据全都进不了上下文；同时末尾不再做硬截断，避免把半句话喂给模型。
+被跳过的条目会以「另有 N 条片段因篇幅或条数上限省略」显式说明，模型因此知道信息有损。
+
 **确定性校验**（`EvidenceValidator.verify`）不依赖模型：
 
 | 规则 | 失败含义 |
@@ -222,7 +237,45 @@ ReportComposer.markdown → 落库 + docx
 `normalize` = 小写 + 去掉所有标点/符号/空白，用来忽略全角半角与标点差异。
 未通过时报告顶部会加一行提示，并附校验记录。
 
-### 3.6 事件流
+### 3.6 自动模式路由与跨任务证据复用
+
+**模式路由**（`service/ModeRouter.java`）：客户端把 `mode` 置空或传 `"AUTO"` 时，后端在任务落库前先判定模式。
+
+```java
+Decision route(String goal)
+  ├─ 目标为空           → GENERAL("未提供分析目标，按通用模式分析")
+  ├─ llm.enabled()      → 模型判定，只认带引号的 "LEARNING" 这类严格命中
+  └─ 否则 / 失败 / 非法 → 关键词规则 guess(goal) 取命中数最高者
+```
+
+三条约束写进了实现：
+
+- **只产出具体模式**。任务上的 `mode` 一定是四个业务模式之一，没有「待路由」中间态，
+  否则读写两端会用不同的键，前端永远查不到结果。
+- **绝不阻断主流程**。模型不可用、超时、返回非法值一律回退关键词规则，本类对外不抛异常。
+- **判定可追溯**。任务上落 `mode_source`（`USER` / `AUTO` / `RULE`）与 `mode_reason`（中文理由），
+  界面上直接显示「学习笔记 · 规则判定」和判定理由，用户能看懂为什么被分到这一类。
+
+反过来，`mode` 传了值但拼错时会**报错**而不是静默变成通用理解——`AnalysisMode.of()` 会吞掉非法值，
+所以 `JobController.parseMode` 显式比对枚举名后抛 400。
+
+**跨任务证据复用**（`service/EvidenceService.java`）：同一素材的第二个任务不必重新转写与识别。
+
+```
+findReusable(assetId, selfJobId)
+  └─ 该素材上最近的 SUCCEEDED 任务 → 读它的转写/画面/分块
+       ├─ 有转写 → 直接落库，跳过抽音与 ASR
+       ├─ 有画面 → 复制帧文件到本次任务的 frames/job-{id}/ 再落库，跳过抽帧与 OCR
+       └─ 两者都在 → 连分块一起复用，跳过摘要与向量化
+```
+
+复用的三条实现细节：
+
+- **昂贵且与目标无关**：转写与 OCR 只取决于素材内容，10 分钟音频约 30 秒，与「用什么模式分析」无关。
+- **帧文件要复制而不是共用路径**：任务可以被单独删除，沿用源路径会让复用方的关键帧 404；单帧 20-40KB，代价可接受。
+- **帧丢失要降级**：`framesAvailable()` 检查文件可读性，目录被清理过就只复用转写、重新抽帧，并发一条 warning。
+
+### 3.7 事件流
 
 - 落库：`job_event`（`seq` 单调递增）
 - 推送：`GET /api/jobs/{id}/stream` 返回 `SseEmitter`
