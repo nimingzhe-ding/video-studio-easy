@@ -1,161 +1,272 @@
 <script setup>
-import { onUnmounted, ref } from 'vue'
+import { computed, onUnmounted, ref } from 'vue';
 
-const props = defineProps({ enabled: { type: Boolean, default: false } })
+const props = defineProps({ enabled: { type: Boolean, default: false } });
 
-const state = ref('idle')
-const log = ref([])
-const error = ref('')
-let socket = null
-let media = null
-let recorder = null
-let audioCtx = null
-let playbackCtx = null
-let pendingChunks = []
-let playing = false
+const state = ref('idle'); // idle | connecting | live | error
+const logs = ref([]);
+const error = ref('');
+const seconds = ref(0);
+const level = ref(0);
+const bars = ref(new Array(24).fill(0.12));
+const transcript = ref([]);
 
-function note(message) {
-  log.value.push(`${new Date().toLocaleTimeString()} ${message}`)
-  if (log.value.length > 60) log.value.shift()
+let socket = null;
+let media = null;
+let audioCtx = null;
+let sourceNode = null;
+let processor = null;
+let playbackCtx = null;
+let playhead = 0;
+let timer = null;
+
+const stateText = computed(() => {
+  switch (state.value) {
+    case 'connecting':
+      return '正在建立通道';
+    case 'live':
+      return '对话中';
+    case 'error':
+      return '连接异常';
+    default:
+      return '未开始';
+  }
+});
+
+function note(text) {
+  const time = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+  logs.value.push(`${time}  ${text}`);
+  if (logs.value.length > 80) {
+    logs.value.shift();
+  }
 }
 
 async function start() {
   if (!props.enabled) {
-    error.value = '服务端未配置 REALTIME_URL / REALTIME_API_KEY'
-    return
+    error.value = '服务端未配置 REALTIME_URL / REALTIME_API_KEY，实时对话不可用。';
+    return;
   }
-  error.value = ''
-  state.value = 'connecting'
+  error.value = '';
+  state.value = 'connecting';
+  note('请求麦克风权限');
   try {
-    media = await navigator.mediaDevices.getUserMedia({ audio: true })
+    media = await navigator.mediaDevices.getUserMedia({ audio: true });
   } catch (e) {
-    error.value = '无法获取麦克风权限：' + e.message
-    state.value = 'idle'
-    return
+    error.value = '无法获取麦克风权限：' + e.message;
+    state.value = 'idle';
+    return;
   }
 
-  const protocol = location.protocol === 'https:' ? 'wss' : 'ws'
-  socket = new WebSocket(`${protocol}://${location.host}/ws/realtime`)
-  socket.binaryType = 'arraybuffer'
+  const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
+  socket = new WebSocket(`${protocol}://${location.host}/ws/realtime`);
+  socket.binaryType = 'arraybuffer';
 
   socket.onopen = () => {
-    state.value = 'live'
-    note('通道已建立，开始推流')
-    startRecording()
-  }
+    state.value = 'live';
+    seconds.value = 0;
+    timer = setInterval(() => (seconds.value += 1), 1000);
+    note('通道已建立，开始推送麦克风音频');
+    startCapture();
+  };
   socket.onmessage = (event) => {
     if (typeof event.data === 'string') {
-      note(event.data.slice(0, 200))
-      handleServerEvent(event.data)
+      handleEvent(event.data);
     } else {
-      playPcm(event.data)
+      playPcm(event.data);
     }
-  }
-  socket.onerror = () => note('连接出错')
-  socket.onclose = (e) => {
-    note('通道已关闭：' + (e.reason || e.code))
-    stopEverything()
-  }
+  };
+  socket.onerror = () => {
+    note('WebSocket 出错');
+    state.value = 'error';
+  };
+  socket.onclose = (event) => {
+    note(`通道关闭（${event.code}${event.reason ? ' ' + event.reason : ''}）`);
+    cleanup();
+  };
 }
 
-function handleServerEvent(raw) {
+function handleEvent(raw) {
+  let payload;
   try {
-    const payload = JSON.parse(raw)
-    if (payload.type === 'response.audio_transcript.delta' && payload.delta) {
-      log.value.push('模型：' + payload.delta)
-    }
-  } catch {
-    /* 非 JSON 帧原样记录即可 */
+    payload = JSON.parse(raw);
+  } catch (e) {
+    note(raw.slice(0, 160));
+    return;
   }
+  const type = payload.type || '';
+  if (type === 'error') {
+    error.value = payload.error?.message || JSON.stringify(payload).slice(0, 200);
+    note('服务端错误：' + error.value);
+    return;
+  }
+  if (type.endsWith('audio_transcript.delta') && payload.delta) {
+    const last = transcript.value[transcript.value.length - 1];
+    if (last && !last.done) {
+      last.text += payload.delta;
+    } else {
+      transcript.value.push({ text: payload.delta, done: false });
+    }
+    return;
+  }
+  if (type.endsWith('audio_transcript.done') && payload.transcript) {
+    transcript.value.push({ text: payload.transcript, done: true });
+    return;
+  }
+  note(type || '收到未知事件');
 }
 
-function startRecording() {
-  audioCtx = new AudioContext({ sampleRate: 16000 })
-  const source = audioCtx.createMediaStreamSource(media)
-  const processor = audioCtx.createScriptProcessor(4096, 1, 1)
+function startCapture() {
+  audioCtx = new AudioContext({ sampleRate: 16000 });
+  sourceNode = audioCtx.createMediaStreamSource(media);
+  processor = audioCtx.createScriptProcessor(4096, 1, 1);
   processor.onaudioprocess = (event) => {
-    if (!socket || socket.readyState !== WebSocket.OPEN) return
-    const input = event.inputBuffer.getChannelData(0)
-    const pcm = new Int16Array(input.length)
+    const input = event.inputBuffer.getChannelData(0);
+    let peak = 0;
+    const pcm = new Int16Array(input.length);
     for (let i = 0; i < input.length; i += 1) {
-      pcm[i] = Math.max(-1, Math.min(1, input[i])) * 0x7fff
+      const sample = Math.max(-1, Math.min(1, input[i]));
+      peak = Math.max(peak, Math.abs(sample));
+      pcm[i] = sample * 0x7fff;
     }
-    socket.send(pcm.buffer)
-  }
-  source.connect(processor)
-  processor.connect(audioCtx.destination)
-  recorder = { source, processor }
+    const next = Math.round(Math.min(1, peak * 2.6) * 20) / 20;
+    level.value = next;
+    bars.value = [...bars.value.slice(1), Math.max(0.1, next)];
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.send(pcm.buffer);
+    }
+  };
+  sourceNode.connect(processor);
+  processor.connect(audioCtx.destination);
 }
 
 function playPcm(buffer) {
   try {
-    playbackCtx = playbackCtx || new AudioContext({ sampleRate: 24000 })
-    const samples = new Int16Array(buffer)
-    if (samples.length === 0) return
-    const audio = playbackCtx.createBuffer(1, samples.length, 24000)
-    const channel = audio.getChannelData(0)
-    for (let i = 0; i < samples.length; i += 1) channel[i] = samples[i] / 0x8000
-    const source = playbackCtx.createBufferSource()
-    source.buffer = audio
-    source.connect(playbackCtx.destination)
-    source.start()
-    playing = true
+    playbackCtx = playbackCtx || new AudioContext({ sampleRate: 24000 });
+    const samples = new Int16Array(buffer);
+    if (!samples.length) {
+      return;
+    }
+    const audio = playbackCtx.createBuffer(1, samples.length, 24000);
+    const channel = audio.getChannelData(0);
+    for (let i = 0; i < samples.length; i += 1) {
+      channel[i] = samples[i] / 0x8000;
+    }
+    const node = playbackCtx.createBufferSource();
+    node.buffer = audio;
+    node.connect(playbackCtx.destination);
+    // 顺序播放：让播放头跟在上一次结束时间之后，避免重叠
+    playhead = Math.max(playhead, playbackCtx.currentTime);
+    node.start(playhead);
+    playhead += audio.duration;
   } catch (e) {
-    note('播放失败：' + e.message)
+    note('播放失败：' + e.message);
   }
 }
 
 function stop() {
-  stopEverything()
-  note('已停止')
+  note('用户主动停止');
+  cleanup();
 }
 
-function stopEverything() {
-  if (recorder) {
-    recorder.processor.disconnect()
-    recorder.source.disconnect()
-    recorder = null
+function cleanup() {
+  if (timer) {
+    clearInterval(timer);
+    timer = null;
+  }
+  if (processor) {
+    processor.onaudioprocess = null;
+    processor.disconnect();
+    processor = null;
+  }
+  if (sourceNode) {
+    sourceNode.disconnect();
+    sourceNode = null;
   }
   if (audioCtx) {
-    audioCtx.close()
-    audioCtx = null
+    audioCtx.close().catch(() => {});
+    audioCtx = null;
   }
   if (media) {
-    media.getTracks().forEach((track) => track.stop())
-    media = null
+    media.getTracks().forEach((track) => track.stop());
+    media = null;
   }
   if (socket) {
     try {
-      socket.close()
-    } catch {
-      /* 已关闭 */
+      socket.close();
+    } catch (e) {
+      /* 已经关闭 */
     }
-    socket = null
+    socket = null;
   }
-  state.value = 'idle'
+  level.value = 0;
+  bars.value = new Array(24).fill(0.12);
+  if (state.value !== 'error') {
+    state.value = 'idle';
+  }
 }
 
-onUnmounted(stopEverything)
+onUnmounted(cleanup);
 </script>
 
 <template>
-  <div class="card">
-    <div class="row" style="margin-bottom: 10px">
-      <h3 style="margin: 0">实时音视频对话</h3>
-      <span class="spacer"></span>
-      <span class="badge" :class="state === 'live' ? 'ok' : ''">{{ state }}</span>
+  <div class="realtime">
+    <div v-if="!enabled" class="notice warn">
+      未配置 REALTIME_URL / REALTIME_API_KEY，实时对话不可用。其余分析能力不受影响。
     </div>
-    <p class="muted">
-      浏览器麦克风 → 本服务（/ws/realtime）→ 云端实时模型 → 回传语音。仅做帧转发，服务端不落盘。
-    </p>
-    <p v-if="error" style="color: var(--err)">{{ error }}</p>
-    <div class="row" style="margin-bottom: 10px">
-      <button v-if="state === 'idle'" :disabled="!enabled" @click="start">开始对话</button>
-      <button v-else class="secondary" @click="stop">停止</button>
+
+    <div class="rt-status">
+      <span class="badge" :class="state === 'live' ? 'ok' : state === 'error' ? 'err' : ''">
+        <span class="dot" :class="{ pulse: state === 'live' }" />
+        {{ stateText }}
+      </span>
+      <div class="wave">
+        <i v-for="(bar, index) in bars" :key="index" :style="{ height: `${Math.max(8, bar * 100)}%` }" />
+      </div>
+      <span class="mono small muted" v-if="state === 'live'">
+        {{ String(Math.floor(seconds / 60)).padStart(2, '0') }}:{{ String(seconds % 60).padStart(2, '0') }}
+      </span>
+      <div class="grow" />
+      <button v-if="state === 'idle' || state === 'error'" class="primary" :disabled="!enabled" @click="start">
+        开始对话
+      </button>
+      <button v-else class="secondary" @click="stop">结束</button>
     </div>
-    <div class="log">
-      <div v-for="(line, i) in log.slice().reverse()" :key="i">{{ line }}</div>
-      <div v-if="log.length === 0" class="muted">暂无日志</div>
+
+    <div v-if="error" class="notice err">{{ error }}</div>
+
+    <div class="hint">
+      浏览器麦克风 → 本服务 /ws/realtime → 云端实时模型 → 音频与文字回传。服务端只做帧转发，不落盘。
+    </div>
+
+    <div v-if="transcript.length" class="rt-transcript">
+      <div v-for="(line, index) in transcript" :key="index" class="rt-line">
+        {{ line.text }}
+      </div>
+    </div>
+
+    <div class="rt-log">
+      <div v-for="(line, index) in logs.slice().reverse()" :key="index">{{ line }}</div>
+      <div v-if="!logs.length" class="muted">暂无事件</div>
     </div>
   </div>
 </template>
+
+<style scoped>
+.rt-transcript {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  background: var(--panel-2);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 220px;
+  overflow-y: auto;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.rt-line {
+  color: var(--text-soft);
+}
+</style>
