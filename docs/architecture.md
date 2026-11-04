@@ -335,6 +335,27 @@ Map<Path, String> captions = captionBlankFrames(scannedFrames, progress);
 描述结果写进 `visual_evidence.caption`，同时进入 `ChunkBuilder.joinOcr`（前缀标 `画面描述：`）
 与 `ContextRenderer` 的 `== 画面文字（OCR）与画面描述（VISION）==` 小节，因此能参与检索与 embedding。
 
+### 3.10 Word 报告的插图
+
+`report/DocxExporter.java` 有两个重载：`export(markdown, target)` 和 `export(markdown, target, figures)`。
+图片**不写进 Markdown**——同一份 Markdown 还要给前端渲染，写死服务器绝对路径会让浏览器去请求 `file://`。
+插图走旁路清单 `record Figure(long timeMs, Path image, String caption)`，只在 Word 里落到文档中。
+
+- **插在哪**：遇到第 2 级标题 `视频证据` 时置位，等到这段列表结束、下一个标题出现之前写入图片段落。
+  放早了会打断证据列表，放文档末尾又和对应结论隔了十几页。
+- **挑哪些帧**：先取草稿里真的被 `OCR` / `VISION` 证据引用的帧（时间戳 2 秒容差，ASR 段起点常比抽帧时刻晚一点），
+  名额还有剩就按时间均匀取样补足——只放被引用的会漏掉没写进结论的章节，全放又会让几百帧淹没正文。
+  上限是 `agent.max-report-figures`（默认 8，`0` 关闭）。
+- **失败不致命**：单张图读不出来只跳过这一张；一张都插不进去时连「关键帧（N 张）」标题都不写，
+  避免出现一个空标题。报告的主体是文字，不能因为少一张截图就整份失败。
+- **尺寸**：宽 420px，高度按原图宽高比算（`ImageIO.read` 拿尺寸，`Units.toEMU` 换算），
+  这样 16:9 的横屏录屏和 3:4 的竖屏手机录像都不会被拉变形。
+
+同时在 `trace.docxFigures` 里记下插图数量，前端「下载 Word」按钮据此显示「· N 图」。
+
+顺带修掉了一个静默失效的老问题：有序列表分支原来写 `run.setText(整行)` 之后又调 `appendInline(p, "")`，
+等于有序列表里的 `**粗体**` 从来没被解析过；现在拆成「编号 + 走 `appendInline` 的正文」。
+
 ## 4. 数据模型
 
 | 表 | 作用 | 关键字段 |

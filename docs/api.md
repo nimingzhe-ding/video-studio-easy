@@ -284,6 +284,12 @@ data: {"status":"SUCCEEDED","progress":100,"error":""}
 
 文件不存在返回 404「报告文件不存在，请重新生成」。
 
+Word 里除了完整的报告正文，还会在「## 视频证据」小节之后插入关键帧截图：优先放被 `OCR` / `VISION` 证据
+引用到的帧（时间戳 2 秒容差），剩余名额按时间均匀取样；最多 `REPORT_MAX_FIGURES` 张（默认 8，`0` 关闭）。
+插图数量记在报告的 `traceJson.docxFigures` 里。
+
+单张图缺失只会少一张，不会让整份导出失败。
+
 ### `GET /api/jobs/{id}/report/subtitle?format=srt`
 
 把该任务的转写导出成字幕文件，`format` 可选 `srt`（默认）/ `vtt` / `txt`。

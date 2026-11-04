@@ -121,3 +121,4 @@
 | 上下文不够用 | `agent.max-context-chars`（默认 24000）；注意超预算的条目会被跳过而不是截断 |
 | 多轮补充不到证据 | `ContextRenderer.recall` 的容差下限（当前 60 秒）与 `critiqueQuery` 的拼接口径 |
 | 模式判不准 | `ModeRouter.KEYWORDS` 的关键词表，或 `mode-router.md` 的模式定位描述 |
+| Word 里插图太多/太少 | `REPORT_MAX_FIGURES`（默认 8，`0` 关闭）；插图优先取被证据引用的帧，剩余按时间均匀取样 |

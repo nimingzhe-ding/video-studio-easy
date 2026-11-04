@@ -45,7 +45,7 @@ Word 报告，并支持围绕报告继续追问。
 | 自动模式判定 | 目标留空或选「自动判断」时，后端用模型（无 key 时用关键词规则）把自然语言目标归到四种模式之一，并记录判定来源与理由 |
 | 证据复用 | 同一素材的第二个任务直接复用已提取的转写、画面文字与分块，只重新检索与分析，省掉最贵的两步 |
 | 多轮补证 | 校验不通过时按 Critic 点名的时间戳回捞片段、按缺口重新检索，扩的是证据而不是重写措辞 |
-| 文档导出 | Markdown 直接展示，Word（.docx）一键下载；转写可导出 SRT / VTT / TXT 字幕 |
+| 文档导出 | Markdown 直接展示；Word（.docx）一键下载，报告里按时间顺序插入引用到的关键帧；转写可导出 SRT / VTT / TXT 字幕 |
 | 追问 | 基于报告 + 检索到的证据继续对话，回答同样带时间戳 |
 | 实时对话 | 浏览器麦克风/摄像头直通云端 realtime 模型（WebSocket 中转，避免把 key 暴露给前端） |
 | 无 key 可跑 | 未配置大模型时自动降级为确定性模板，转写、OCR、检索、报告、导出全部照常工作 |
@@ -210,6 +210,7 @@ export LLM_MODEL=qwen-plus
 | `CHUNK_SECONDS` | `300` | 上下文分块长度 |
 | `RETRIEVAL_TOP_K` | `3` | 检索返回的分块数 |
 | `RETRIEVAL_MAX_SEGMENTS` | `8` | 单个分块最多携带的证据段数 |
+| `REPORT_MAX_FIGURES` | `8` | Word 报告里最多插入几张关键帧（`0` 关闭插图） |
 
 ---
 
@@ -221,7 +222,7 @@ export LLM_MODEL=qwen-plus
 3. **选择模式**：默认「自动判断」（后端按目标归类并显示判定理由），也可手动指定
    通用理解 / 学习笔记 / 内容评审 / 二次创作
 4. **开始分析**：右侧「执行日志」实时显示阶段与进度（SSE）
-5. **看报告**：报告页渲染 Markdown，每条结论都带 `[mm:ss]`，点击即可跳到原片对应位置，可复制或下载 Word
+5. **看报告**：报告页渲染 Markdown，每条结论都带 `[mm:ss]`，点击即可跳到原片对应位置，可复制或下载 Word（Word 里会在「视频证据」之后插入对应的关键帧截图）
    - 同一素材再跑一次会自动复用已提取的转写与画面证据，只重新分析（几秒出结果）
 6. **追问**：切到「追问」，例如「第三节提到的那个阈值是多少？」，回答同样带时间戳
 7. **核对证据**：「转写与画面」页可按「仅语音 / 仅画面文字」过滤，逐条回看
@@ -310,7 +311,7 @@ export LLM_MODEL=qwen-plus
 | `GET` | `/api/jobs/{jobId}/frames/{seq}` | 第 `seq` 条证据的关键帧图片 |
 | `GET` | `/api/jobs/{id}/report` | 报告 JSON |
 | `GET` | `/api/jobs/{id}/report/markdown` | 报告 Markdown |
-| `GET` | `/api/jobs/{id}/report/docx` | 报告 Word 下载 |
+| `GET` | `/api/jobs/{id}/report/docx` | 报告 Word 下载（含关键帧插图） |
 | `GET` | `/api/jobs/{id}/report/subtitle?format=srt` | 字幕导出（`srt` / `vtt` / `txt`） |
 | `POST` | `/api/jobs/{id}/cancel` | 取消任务 |
 | `POST` | `/api/jobs/{id}/reanalyze` | 复用证据重新分析 `{goal, mode}` |
@@ -432,7 +433,7 @@ curl -N http://127.0.0.1:9090/api/jobs/1/stream
 
 # 4. 取报告
 curl -s http://127.0.0.1:9090/api/jobs/1/report/markdown
-curl -o report.docx http://127.0.0.1:9090/api/jobs/1/report/docx
+curl -o report.docx http://127.0.0.1:9090/api/jobs/1/report/docx   # 报告 + 关键帧插图
 
 # 5. 导出字幕（srt / vtt / txt）
 curl -o subtitle.srt "http://127.0.0.1:9090/api/jobs/1/report/subtitle?format=srt"
