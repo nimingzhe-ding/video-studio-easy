@@ -40,8 +40,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -56,6 +58,9 @@ import java.util.function.Consumer;
 public class AnalysisPipeline {
 
     private static final Logger log = LoggerFactory.getLogger(AnalysisPipeline.class);
+
+    /** 证据时间戳与抽帧时刻的容差：ASR 段起点常常比抽到的那一帧晚零点几秒 */
+    private static final long FIGURE_TOLERANCE_MS = 2_000;
 
     private final MediaRepository mediaRepository;
     private final JobRepository jobRepository;
@@ -293,8 +298,9 @@ public class AnalysisPipeline {
                 draft, outcome.critique(), citations);
 
         Path docx = storage.reportDocx(asset.id(), run.jobId);
+        List<DocxExporter.Figure> figures = reportFigures(draft, visuals);
         try {
-            docxExporter.export(markdown, docx);
+            docxExporter.export(markdown, docx, figures);
         } catch (Exception e) {
             run.warn("生成 Word 文档失败：" + Texts.oneLine(e.getMessage(), 120));
             docx = null;
@@ -324,6 +330,9 @@ public class AnalysisPipeline {
             trace.put("captionedFrames", captionedCount);
         }
         trace.put("chunks", chunks.size());
+        if (!figures.isEmpty()) {
+            trace.put("docxFigures", figures.size());
+        }
         trace.put("warnings", run.warnings);
         trace.put("llmEnabled", aiProps.cloudEnabled());
 
@@ -357,5 +366,62 @@ public class AnalysisPipeline {
             }
         }
         return count;
+    }
+
+    /**
+     * 挑出要插进 Word 的关键帧。
+     * <p>顺序是「被结论引用的帧优先，其余按时长均匀取样补足」，两条理由：
+     * <ul>
+     *   <li>读者真正要核对的是结论引用的那一帧，所以先放被引用的；</li>
+     *   <li>只放被引用的又会漏掉没被写进结论的章节（比如纯画面演示），
+     *       而两小时视频有几百帧全塞进去会淹没正文，所以剩下的名额按时间均匀取样。</li>
+     * </ul>
+     */
+    private List<DocxExporter.Figure> reportFigures(AgentModels.Draft draft, List<VisualEvidence> visuals) {
+        int limit = agentProps.getMaxReportFigures();
+        if (limit <= 0 || visuals.isEmpty()) {
+            return List.of();
+        }
+        List<VisualEvidence> usable = visuals.stream()
+                .filter(v -> !Texts.isBlank(v.framePath()) && Files.isReadable(Path.of(v.framePath())))
+                .sorted(Comparator.comparingLong(VisualEvidence::timeMs))
+                .toList();
+        if (usable.isEmpty()) {
+            return List.of();
+        }
+        // 1) 草稿里真的引用了的帧（OCR / VISION 证据，时间戳按 2 秒容差对齐）
+        List<VisualEvidence> picked = new ArrayList<>();
+        for (VisualEvidence visual : usable) {
+            boolean cited = draft.evidence().stream()
+                    .filter(e -> e.source() != null && (e.source().contains("OCR") || e.source().contains("VISION")))
+                    .anyMatch(e -> Math.abs(visual.timeMs() - e.timestampMs()) <= FIGURE_TOLERANCE_MS);
+            if (cited) {
+                picked.add(visual);
+            }
+            if (picked.size() >= limit) {
+                break;
+            }
+        }
+        // 2) 名额还有剩就按时间均匀取样，保证长视频也能看到片头片尾
+        if (picked.size() < limit) {
+            List<VisualEvidence> rest = usable.stream().filter(v -> !picked.contains(v)).toList();
+            int need = limit - picked.size();
+            if (rest.size() <= need) {
+                picked.addAll(rest);
+            } else {
+                for (int k = 0; k < need; k++) {
+                    picked.add(rest.get((int) ((long) k * rest.size() / need)));
+                }
+            }
+        }
+        return picked.stream()
+                .sorted(Comparator.comparingLong(VisualEvidence::timeMs))
+                .map(AnalysisPipeline::figure)
+                .toList();
+    }
+
+    private static DocxExporter.Figure figure(VisualEvidence visual) {
+        String caption = Texts.isBlank(visual.ocrText()) ? visual.caption() : visual.ocrText();
+        return new DocxExporter.Figure(visual.timeMs(), Path.of(visual.framePath()), caption);
     }
 }

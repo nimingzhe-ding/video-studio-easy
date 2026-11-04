@@ -12,6 +12,8 @@ public class AgentProperties {
     private int chunkSeconds = 300;
     private int topKChunks = 3;
     private int maxEvidenceSegments = 8;
+    /** Word 报告里最多插几张关键帧；0 表示不插图 */
+    private int maxReportFigures = 8;
 
     public int getMaxRounds() {
         return maxRounds;
@@ -63,5 +65,13 @@ public class AgentProperties {
 
     public void setMaxEvidenceSegments(int maxEvidenceSegments) {
         this.maxEvidenceSegments = maxEvidenceSegments;
+    }
+
+    public int getMaxReportFigures() {
+        return maxReportFigures;
+    }
+
+    public void setMaxReportFigures(int maxReportFigures) {
+        this.maxReportFigures = maxReportFigures;
     }
 }
