@@ -1,22 +1,38 @@
 package com.videostudio.asr;
 
+import com.videostudio.common.Texts;
 import com.videostudio.config.AppProperties;
 import com.videostudio.domain.TranscriptSegment;
 import com.videostudio.media.AudioExtractor;
+import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
 /**
- * 转写编排：切片 → 逐片识别 → 映射回全局时间轴。
- * <p>云端优先，失败自动回退本地 whisper；两者都不可用时返回空结果并提示降级，
- * 而不是让整个分析任务失败——没有转写仍然可以靠 OCR 阅读画面文字。
+ * 转写编排：切片 → 并发逐片识别 → 映射回全局时间轴。
+ *
+ * <p>切片之间互不依赖，串行识别等于把整段耗时累加；一小时音频按 60s 切成 60 片，
+ * 3 路并发能压到三分之一左右。并发度由 {@code app.media.asr-concurrency} 控制：
+ * <ul>
+ *   <li>云端接口：受账号 QPS 限制，通常 2-3 路合适；</li>
+ *   <li>本地 whisper：每个进程各自加载一份模型（small 约 500MB），并发度过高会吃满内存，</li>
+ * </ul>
+ * 因此默认取 3，并允许按机器情况调整。
+ *
+ * <p>结果按切片顺序收集后再排序，保证时间轴单调，不受并发完成顺序影响。
  */
 @Component
 public class TranscriptionService {
@@ -27,6 +43,7 @@ public class TranscriptionService {
     private final WhisperCliRecognizer whisper;
     private final AudioExtractor audioExtractor;
     private final AppProperties props;
+    private final ExecutorService pool;
 
     public TranscriptionService(CloudSpeechRecognizer cloud, WhisperCliRecognizer whisper,
                                 AudioExtractor audioExtractor, AppProperties props) {
@@ -34,6 +51,18 @@ public class TranscriptionService {
         this.whisper = whisper;
         this.audioExtractor = audioExtractor;
         this.props = props;
+        int threads = Math.max(1, props.getMedia().getAsrConcurrency());
+        AtomicInteger seq = new AtomicInteger();
+        this.pool = Executors.newFixedThreadPool(threads, r -> {
+            Thread t = new Thread(r, "asr-" + seq.incrementAndGet());
+            t.setDaemon(true);
+            return t;
+        });
+    }
+
+    @PreDestroy
+    void shutdown() {
+        pool.shutdownNow();
     }
 
     public record Outcome(List<TranscriptSegment> segments, String engine, List<String> warnings) {
@@ -45,35 +74,63 @@ public class TranscriptionService {
     public Outcome transcribe(Path wav, Path sliceDir, long durationMs, Consumer<String> progress) {
         int sliceSeconds = props.getMedia().getAsrSegmentSeconds();
         List<AudioExtractor.Slice> slices = audioExtractor.slice(wav, sliceDir, durationMs, sliceSeconds);
-        List<TranscriptSegment> segments = new ArrayList<>();
-        List<String> warnings = new ArrayList<>();
         if (slices.isEmpty()) {
-            warnings.add("未能切分出音频片段，跳过语音识别");
-            return new Outcome(segments, "none", warnings);
+            return new Outcome(List.of(), "none", List.of("未能切分出音频片段，跳过语音识别"));
         }
-        String engine = "none";
-        int done = 0;
+
+        List<String> warnings = Collections.synchronizedList(new ArrayList<>());
+        AtomicInteger done = new AtomicInteger();
+        List<Future<SliceResult>> futures = new ArrayList<>(slices.size());
         for (AudioExtractor.Slice slice : slices) {
-            progress.accept("语音识别 %d/%d".formatted(done + 1, slices.size()));
-            Optional<SpeechRecognizer.Result> result = recognize(slice.file(), warnings);
-            if (result.isPresent() && !result.get().blank()) {
-                SpeechRecognizer.Result r = result.get();
-                engine = r.engine();
-                if (r.words().isEmpty()) {
-                    segments.add(new TranscriptSegment(slice.startMs(), slice.endMs(), r.text(), null, null, r.engine()));
-                } else {
-                    for (SpeechRecognizer.Word word : r.words()) {
-                        long start = slice.startMs() + word.startMs();
-                        long end = Math.min(slice.endMs(), slice.startMs() + Math.max(word.endMs(), word.startMs() + 200));
-                        segments.add(new TranscriptSegment(start, end, word.text(), null, null, r.engine()));
-                    }
+            futures.add(pool.submit(() -> {
+                Optional<SpeechRecognizer.Result> result = recognize(slice.file(), warnings);
+                progress.accept("语音识别 %d/%d".formatted(done.incrementAndGet(), slices.size()));
+                return new SliceResult(slice, result.orElse(null));
+            }));
+        }
+
+        // 按提交顺序取结果，保证输出顺序稳定；get() 会等待该片完成，但不影响前面的片已经并行跑完
+        List<SliceResult> results = new ArrayList<>(slices.size());
+        for (Future<SliceResult> future : futures) {
+            try {
+                results.add(future.get());
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                warnings.add("语音识别被中断");
+                break;
+            } catch (ExecutionException e) {
+                log.warn("语音识别任务异常: {}", e.getCause() == null ? e.getMessage() : e.getCause().getMessage());
+                warnings.add("部分片段识别失败: " + Texts.oneLine(String.valueOf(
+                        e.getCause() == null ? e.getMessage() : e.getCause().getMessage()), 120));
+            }
+        }
+
+        List<TranscriptSegment> segments = new ArrayList<>();
+        String engine = "none";
+        for (SliceResult result : results) {
+            if (result.recognized() == null || result.recognized().blank()) {
+                continue;
+            }
+            SpeechRecognizer.Result r = result.recognized();
+            engine = r.engine();
+            AudioExtractor.Slice slice = result.slice();
+            if (r.words().isEmpty()) {
+                segments.add(new TranscriptSegment(slice.startMs(), slice.endMs(), r.text(), null, null, r.engine()));
+            } else {
+                for (SpeechRecognizer.Word word : r.words()) {
+                    long start = slice.startMs() + word.startMs();
+                    long end = Math.min(slice.endMs(), slice.startMs() + Math.max(word.endMs(), word.startMs() + 200));
+                    segments.add(new TranscriptSegment(start, end, word.text(), null, null, r.engine()));
                 }
             }
-            done++;
         }
         segments.sort(java.util.Comparator.comparingLong(TranscriptSegment::startMs));
-        log.info("转写完成 engine={} segments={} warnings={}", engine, segments.size(), warnings.size());
+        log.info("转写完成 engine={} slices={} concurrency={} segments={} warnings={}",
+                engine, slices.size(), props.getMedia().getAsrConcurrency(), segments.size(), warnings.size());
         return new Outcome(merge(segments), engine, warnings);
+    }
+
+    private record SliceResult(AudioExtractor.Slice slice, SpeechRecognizer.Result recognized) {
     }
 
     private Optional<SpeechRecognizer.Result> recognize(Path file, List<String> warnings) {
@@ -84,7 +141,7 @@ public class TranscriptionService {
                 } catch (RuntimeException e) {
                     log.warn("云端 ASR 第 {} 次失败 {}: {}", attempt, file.getFileName(), e.getMessage());
                     if (attempt == 2) {
-                        warnings.add("云端语音识别失败，已回退本地 whisper: " + com.videostudio.common.Texts.oneLine(e.getMessage(), 120));
+                        warnings.add("云端语音识别失败，已回退本地 whisper: " + Texts.oneLine(e.getMessage(), 120));
                     }
                 }
             }
@@ -94,7 +151,7 @@ public class TranscriptionService {
                 return Optional.of(whisper.transcribe(file));
             } catch (RuntimeException e) {
                 log.warn("本地 whisper 失败 {}: {}", file.getFileName(), e.getMessage());
-                warnings.add("本地语音识别失败: " + com.videostudio.common.Texts.oneLine(e.getMessage(), 120));
+                warnings.add("本地语音识别失败: " + Texts.oneLine(e.getMessage(), 120));
             }
         } else if (!cloud.available()) {
             warnings.add("未配置任何语音识别引擎（云端或本地 whisper），本次仅基于画面文字分析");

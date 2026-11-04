@@ -1,15 +1,22 @@
 package com.videostudio.ocr;
 
 import com.videostudio.common.Texts;
+import com.videostudio.config.AppProperties;
 import com.videostudio.domain.VisualEvidence;
 import com.videostudio.media.FrameDeduper;
 import com.videostudio.media.FrameExtractor;
+import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
 /**
@@ -22,6 +29,10 @@ import java.util.function.Consumer;
  *   <li>文本判重：OCR 结果归一化后与上一张保留帧一致，判定为同一屏并丢弃，只保留第一次出现的时间点。</li>
  * </ol>
  * 第二级保证「换页但版式相似」的帧不会被误删——这正是长视频里最常见的课件/录屏形态。
+ *
+ * <p>三段式执行：<b>串行算指纹 → 并行 OCR → 串行文本判重</b>。
+ * 指纹是纯内存的位运算（每帧几毫秒），OCR 是外部进程（每帧几百毫秒），
+ * 所以把重的部分并行、轻的判重保持串行，既提速又不破坏「只和上一张保留帧比较」的语义。
  */
 @Component
 public class VisualEvidenceService {
@@ -37,10 +48,25 @@ public class VisualEvidenceService {
 
     private final TextRecognizer recognizer;
     private final FrameDeduper deduper;
+    private final ExecutorService pool;
+    private final int concurrency;
 
-    public VisualEvidenceService(TextRecognizer recognizer, FrameDeduper deduper) {
+    public VisualEvidenceService(TextRecognizer recognizer, FrameDeduper deduper, AppProperties props) {
         this.recognizer = recognizer;
         this.deduper = deduper;
+        int threads = Math.max(1, props.getMedia().getOcrConcurrency());
+        this.concurrency = threads;
+        AtomicInteger seq = new AtomicInteger();
+        this.pool = Executors.newFixedThreadPool(threads, r -> {
+            Thread t = new Thread(r, "ocr-" + seq.incrementAndGet());
+            t.setDaemon(true);
+            return t;
+        });
+    }
+
+    @PreDestroy
+    void shutdown() {
+        pool.shutdownNow();
     }
 
     public record Outcome(List<VisualEvidence> items, int scanned, int dropped) {
@@ -51,30 +77,66 @@ public class VisualEvidenceService {
         return recognizer.engine();
     }
 
+    /** 待 OCR 的帧 + 已经算好的指纹，避免重复计算 */
+    private record Candidate(FrameExtractor.Frame frame, FrameDeduper.Fingerprint fingerprint) {
+    }
+
+    /** 一帧的最终结果：帧、指纹、OCR 文本 */
+    private record Scanned(Candidate candidate, String text) {
+    }
+
     public Outcome extract(List<FrameExtractor.Frame> frames, Consumer<String> progress) {
-        List<VisualEvidence> items = new ArrayList<>();
+        // 第一段：串行算指纹并快筛。纯像素位运算，单帧毫秒级，不必并行。
+        List<Candidate> candidates = new ArrayList<>();
         FrameDeduper.Fingerprint previous = null;
-        String previousText = null;
-        int dropped = 0;
-        int blank = 0;
-        int scanned = 0;
+        int fastSkipped = 0;
         for (FrameExtractor.Frame frame : frames) {
-            scanned++;
-            if (scanned % 5 == 0) {
-                progress.accept("画面文字识别 %d/%d".formatted(scanned, frames.size()));
-            }
             FrameDeduper.Fingerprint fingerprint = deduper.fingerprint(frame.path());
             if (previous != null && fingerprint != null && fingerprint.dhash() == previous.dhash()
                     && FrameDeduper.signatureMad(previous.signature(), fingerprint.signature()) < SKIP_MAD) {
-                dropped++;
+                fastSkipped++;
                 continue;
             }
-            String text = recognizer.recognize(frame.path());
-            String normalized = Texts.normalizeWhitespace(text);
+            previous = fingerprint;
+            candidates.add(new Candidate(frame, fingerprint));
+        }
+
+        // 第二段：并行 OCR。帧之间互不依赖，唯一共享的是外部进程与内存，由并发度配置控制。
+        int total = candidates.size();
+        AtomicInteger done = new AtomicInteger();
+        List<Future<Scanned>> futures = new ArrayList<>(total);
+        for (Candidate candidate : candidates) {
+            futures.add(pool.submit(() -> {
+                String text = recognizer.recognize(candidate.frame().path());
+                progress.accept("画面文字识别 %d/%d".formatted(done.incrementAndGet(), total));
+                return new Scanned(candidate, text);
+            }));
+        }
+        List<Scanned> scannedFrames = new ArrayList<>(total);
+        for (int i = 0; i < futures.size(); i++) {
+            try {
+                scannedFrames.add(futures.get(i).get());
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                log.warn("画面文字识别被中断");
+                break;
+            } catch (ExecutionException e) {
+                // 单帧 OCR 失败不应该让整个任务失败：跳过该帧，继续后面的
+                log.warn("画面文字识别失败 {}: {}", candidates.get(i).frame().path(),
+                        e.getCause() == null ? e.getMessage() : e.getCause().getMessage());
+            }
+        }
+
+        // 第三段：串行文本判重。必须按时间顺序看，才能定位「同一屏第一次出现的时刻」。
+        List<VisualEvidence> items = new ArrayList<>();
+        String previousText = null;
+        int dropped = fastSkipped;
+        int blank = 0;
+        for (Scanned scanned : scannedFrames) {
+            String normalized = Texts.normalizeWhitespace(scanned.text());
             if (normalized.isEmpty()) {
                 // 没有文字的画面（纯人像、纯风景）在本项目里不构成可核验证据，直接丢弃，避免污染检索。
                 blank++;
-                previous = fingerprint;
                 previousText = null;
                 continue;
             }
@@ -82,12 +144,14 @@ public class VisualEvidenceService {
                 dropped++;
                 continue;
             }
-            previous = fingerprint;
             previousText = normalized;
-            items.add(new VisualEvidence(frame.timeMs(), frame.path().toString(), text, null,
+            FrameExtractor.Frame frame = scanned.candidate().frame();
+            FrameDeduper.Fingerprint fingerprint = scanned.candidate().fingerprint();
+            items.add(new VisualEvidence(frame.timeMs(), frame.path().toString(), scanned.text(), null,
                     fingerprint == null ? null : fingerprint.hex(), recognizer.engine()));
         }
-        log.info("画面证据完成 frames={} kept={} duplicate={} blank={}", frames.size(), items.size(), dropped, blank);
-        return new Outcome(items, scanned, dropped);
+        log.info("画面证据完成 frames={} candidates={} kept={} duplicate={} blank={} concurrency={}",
+                frames.size(), total, items.size(), dropped, blank, concurrency);
+        return new Outcome(items, frames.size(), dropped);
     }
 }
