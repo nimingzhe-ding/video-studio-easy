@@ -1,6 +1,9 @@
 package com.videostudio.web;
 
+import com.videostudio.common.ApiResponse;
 import com.videostudio.common.Json;
+import com.videostudio.config.AiProperties;
+import com.videostudio.config.RealtimeProperties;
 import com.videostudio.domain.AnalysisJob;
 import com.videostudio.domain.JobEvent;
 import com.videostudio.domain.JobStatus;
@@ -43,10 +46,15 @@ public class JobEventController {
 
     private final JobRepository jobRepository;
     private final JobEventRepository eventRepository;
+    private final AiProperties ai;
+    private final RealtimeProperties realtime;
 
-    public JobEventController(JobRepository jobRepository, JobEventRepository eventRepository) {
+    public JobEventController(JobRepository jobRepository, JobEventRepository eventRepository,
+                              AiProperties ai, RealtimeProperties realtime) {
         this.jobRepository = jobRepository;
         this.eventRepository = eventRepository;
+        this.ai = ai;
+        this.realtime = realtime;
     }
 
     @GetMapping("/{id}/stream")
@@ -109,15 +117,16 @@ public class JobEventController {
 
     /** 轻量健康检查，前端用来确认后端在线与 AI 是否已配置 */
     @GetMapping("/runtime")
-    public Map<String, Object> runtime(@org.springframework.beans.factory.annotation.Autowired(required = false)
-                                       com.videostudio.config.AiProperties ai,
-                                       @org.springframework.beans.factory.annotation.Autowired(required = false)
-                                       com.videostudio.config.RealtimeProperties realtime) {
-        return Map.of(
-                "aiEnabled", ai != null && ai.cloudEnabled(),
-                "model", ai == null ? "" : ai.getModel(),
-                "embeddingModel", ai == null ? "" : ai.getEmbeddingModel(),
-                "realtimeEnabled", realtime != null && realtime.ready(),
-                "status", JobStatus.values().length);
+    public ApiResponse<Map<String, Object>> runtime() {
+        // 必须和其余接口一样包一层 ApiResponse：前端 request() 统一取 payload.data，
+        // 返回裸 Map 会让整块环境信息在前端变成 undefined（表现为永远显示「离线模式」）。
+        return ApiResponse.success(Map.of(
+                "aiEnabled", ai.cloudEnabled(),
+                "model", ai.getModel(),
+                "embeddingModel", ai.getEmbeddingModel(),
+                "visionCaptionEnabled", ai.visionCaptionEnabled(),
+                "visionModel", ai.getVisionModel(),
+                "realtimeEnabled", realtime.ready(),
+                "status", JobStatus.values().length));
     }
 }

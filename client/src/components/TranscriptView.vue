@@ -45,13 +45,18 @@ const visibleSegments = computed(() => {
   return segments.value.filter((seg) => (seg.text || '').toLowerCase().includes(word));
 });
 
+// 带上「在全量证据里的下标」：服务端 /frames/{seq} 用的是全量下标，
+// 过滤后如果直接用 v-for 的 index 会取到别的帧。
 const visibleEvidence = computed(() => {
   const word = keyword.value.trim().toLowerCase();
-  if (!word) {
-    return evidence.value;
-  }
-  return evidence.value.filter((item) => (item.ocrText || '').toLowerCase().includes(word));
+  return evidence.value
+    .map((item, index) => ({ item, index }))
+    .filter(({ item }) => !word || (displayText(item) || '').toLowerCase().includes(word));
 });
+
+function displayText(item) {
+  return item.ocrText || item.caption || '';
+}
 
 const totalWords = computed(() =>
   segments.value.reduce((sum, seg) => sum + (seg.text ? seg.text.replace(/\s/g, '').length : 0), 0)
@@ -120,24 +125,26 @@ function openImage(url) {
           <template v-else><strong>没有画面文字</strong>纯音频素材或画面中没有可识别文本。</template>
         </div>
         <div v-else class="evidence-grid">
-          <div v-for="(item, index) in visibleEvidence" :key="index" class="evidence-card">
+          <div v-for="row in visibleEvidence" :key="row.index" class="evidence-card">
             <img
-              :src="api.frameUrl(jobId, index)"
-              :alt="item.ocrText || '关键帧'"
+              :src="api.frameUrl(jobId, row.index)"
+              :alt="row.item.ocrText || row.item.caption || '关键帧'"
               loading="lazy"
-              @click="openImage(api.frameUrl(jobId, index))"
+              @click="openImage(api.frameUrl(jobId, row.index))"
             />
             <div class="cap-head">
-              <span class="ts" @click="jump(item.timeMs)">{{ formatDuration(item.timeMs) }}</span>
-              <span class="small muted">{{ item.source }}</span>
+              <span class="ts" @click="jump(row.item.timeMs)">{{ formatDuration(row.item.timeMs) }}</span>
+              <span class="small muted">{{ !row.item.ocrText && row.item.caption ? 'VISION' : row.item.source }}</span>
             </div>
-            <div class="cap" v-html="highlight(item.ocrText || '（该帧未识别到文字）', keyword)" />
+            <div v-if="row.item.ocrText" class="cap" v-html="highlight(row.item.ocrText, keyword)" />
+            <div v-if="row.item.caption" class="cap caption" v-html="highlight(row.item.caption, keyword)" />
+            <div v-if="!row.item.ocrText && !row.item.caption" class="cap">（该帧未识别到文字）</div>
           </div>
         </div>
       </div>
 
       <div v-if="!keyword" class="transcript-foot">
-        共 {{ segments.length }} 段语音、{{ visibleEvidence.length }} 条画面证据，约 {{ totalWords }} 字
+        共 {{ segments.length }} 段语音、{{ evidence.length }} 条画面证据，约 {{ totalWords }} 字
         <template v-if="durationMs">· 覆盖 {{ formatDuration(durationMs) }}</template>
       </div>
     </template>
@@ -175,6 +182,12 @@ function openImage(url) {
 .export-group .chip:hover {
   border-color: var(--accent);
   color: var(--accent-strong);
+}
+
+.evidence-card .cap.caption {
+  color: var(--muted);
+  font-style: italic;
+  border-top: 1px dashed var(--border);
 }
 
 .transcript-foot {
