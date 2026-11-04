@@ -44,6 +44,7 @@ Word 报告，并支持围绕报告继续追问。
 | 追问 | 基于报告 + 检索到的证据继续对话，回答同样带时间戳 |
 | 实时对话 | 浏览器麦克风/摄像头直通云端 realtime 模型（WebSocket 中转，避免把 key 暴露给前端） |
 | 无 key 可跑 | 未配置大模型时自动降级为确定性模板，转写、OCR、检索、报告、导出全部照常工作 |
+| 可点回的界面 | 原片播放器 + `[mm:ss]` 点击跳转、报告目录、转写搜索高亮、关键帧灯箱、明暗主题、移动端抽屉 |
 
 ---
 
@@ -51,7 +52,7 @@ Word 报告，并支持围绕报告继续追问。
 
 - **后端**：Java 21 + Spring Boot 3.5.16（Web / JDBC / WebSocket / Validation），Apache POI 生成 Word
 - **存储**：H2 文件库（默认，零依赖）；DDL 兼容 MySQL，改 datasource 即可切换
-- **前端**：Vue 3 + Vite 5，`marked` 渲染 Markdown
+- **前端**：Vue 3 + Vite 5 单页应用，`marked` 渲染 Markdown，无 UI 框架，样式为手写设计系统（明/暗双主题 + 响应式）
 - **本地媒体工具**：ffmpeg / ffprobe（抽音轨、抽帧、切片）、whisper.cpp（本地语音识别）、
   Tesseract 或 macOS Vision CLI（画面文字识别）
 - **模型网关**：任意 OpenAI 兼容接口（默认 DashScope 兼容模式：`qwen-plus` / `qwen-vl-max` /
@@ -98,6 +99,14 @@ npm run dev
 
 生产/演示模式可以只跑后端：`npm run build` 后，`client/dist` 会被自动托管在 `9090`，
 浏览器直接访问 `http://127.0.0.1:9090` 即可。
+
+界面上的常用操作：
+
+- 左侧拖入文件即可上传，上传后点「分析『文件名』」用当前模式与目标开跑
+- 主区顶部的播放器可以直接拖进度条；报告、追问、转写里的 `[mm:ss]` 点击即跳到对应位置
+- 报告右侧有自动生成的目录；「转写与画面」支持关键词搜索高亮、只看语音/只看画面、关键帧灯箱
+- 右上角可切换明暗主题（选择记在 `localStorage`），窄屏下左侧栏收进抽屉
+- 任务卡片悬停可取消或删除；删除任务只清理它自己的证据与文件，同素材的其他任务不受影响
 
 ### 4. 配置大模型（可选）
 
@@ -247,7 +256,12 @@ export LLM_MODEL=qwen-plus
 | `GET` | `/api/media` | 媒体列表（`limit` 1..200） |
 | `GET` | `/api/media/{id}` | 媒体详情 |
 | `GET` | `/api/media/{id}/jobs` | 该媒体的任务 |
-| `DELETE` | `/api/media/{id}` | 删除媒体 |
+| `GET` | `/api/media/{id}/info` | 播放器用的轻量信息 |
+| `GET` | `/api/media/{id}/stream` | 原始文件流，支持 `Range` 拖动播放 |
+| `GET` | `/api/media/{id}/thumbnail?at=` | 封面抽帧（缓存） |
+| `GET` | `/api/media/{id}/frame?t=&w=` | 任意时刻抽帧预览（缓存） |
+| `GET` | `/api/media/{id}/download` | 下载原始文件 |
+| `DELETE` | `/api/media/{id}` | 级联删除媒体与其全部任务、文件 |
 | `POST` | `/api/jobs` | 提交分析任务 `{assetId, goal, mode, title}` |
 | `GET` | `/api/jobs` | 任务列表 |
 | `GET` | `/api/jobs/{id}` | 任务详情（含报告与事件） |
@@ -255,11 +269,13 @@ export LLM_MODEL=qwen-plus
 | `GET` | `/api/jobs/{id}/stream?after=` | **SSE** 实时事件流（`hello` / `event` / `done`） |
 | `GET` | `/api/jobs/{id}/transcript?from=&size=` | 转写分页 |
 | `GET` | `/api/jobs/{id}/evidence` | 画面文字证据 |
+| `GET` | `/api/jobs/{jobId}/frames/{seq}` | 第 `seq` 条证据的关键帧图片 |
 | `GET` | `/api/jobs/{id}/report` | 报告 JSON |
 | `GET` | `/api/jobs/{id}/report/markdown` | 报告 Markdown |
 | `GET` | `/api/jobs/{id}/report/docx` | 报告 Word 下载 |
 | `POST` | `/api/jobs/{id}/cancel` | 取消任务 |
 | `POST` | `/api/jobs/{id}/reanalyze` | 复用证据重新分析 `{goal, mode}` |
+| `DELETE` | `/api/jobs/{id}` | 删除任务及其证据与文件 |
 | `POST` | `/api/jobs/{id}/chat` | 追问 `{question}` |
 | `GET` / `DELETE` | `/api/jobs/{id}/chat` | 追问历史 / 清空 |
 | `GET` | `/api/jobs/runtime` | 运行环境（是否配置了大模型 / 实时模型） |
@@ -300,7 +316,14 @@ video-studio-easy/
 │           ├── application.properties
 │           ├── db/schema.sql
 │           └── prompts/          # 系统策略与各角色提示词（可独立调整）
-├── client/                       # Vue 3 + Vite 前端
+├── client/                       # Vue 3 + Vite 单页前端
+│   └── src/
+│       ├── App.vue               # 布局、上传、媒体库、任务列表、播放器、标签页
+│       ├── api.js                # REST / XHR 上传 / SSE 封装
+│       ├── format.js             # 时间、大小、状态与引擎的中文文案
+│       ├── markdown.js           # Markdown 渲染 + [mm:ss] 时间戳胶囊 + 搜索高亮
+│       ├── styles.css            # 手工设计系统（明暗主题、响应式）
+│       └── components/           # JobCard / ReportView / TranscriptView / ChatPanel / RealtimePanel
 ├── tools/vision-ocr/             # macOS Vision OCR 命令行（可选）
 └── docs/                         # 设计文档
 ```

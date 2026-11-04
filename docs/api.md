@@ -51,7 +51,35 @@ curl -F "file=@demo.mp4" http://127.0.0.1:9090/api/media
 
 ### `DELETE /api/media/{id}`
 
-删除媒体记录。运行中的任务会先用 `409` 阻止删除。
+级联删除：先取消运行中的任务，再清理该媒体下的全部任务、事件、转写、画面证据、上下文分块、报告、追问记录与磁盘目录（`data/media/{id}`）。
+
+### `GET /api/media/{id}/info`
+
+给播放器用的轻量信息。
+
+```json
+{ "id": 1, "name": "demo.mp4", "kind": "VIDEO", "durationMs": 76060, "sizeBytes": 1749299, "playable": true, "stream": "/api/media/1/stream" }
+```
+
+### `GET /api/media/{id}/stream`
+
+原始文件流，支持单区间 `Range` 请求（`200` / `206`），带 `Accept-Ranges`、`Content-Range`，浏览器 `video` 标签可直接拖动进度条。
+
+### `GET /api/media/{id}/thumbnail?at=1`
+
+抽取指定秒数的画面作为封面，宽度 480。结果按时间点缓存到 `data/media/{id}/thumb-<秒*10>.jpg`，重复请求不再调用 ffmpeg。
+
+### `GET /api/media/{id}/frame?t=30&w=960`
+
+任意时间点抽帧预览，`w` 为宽度，缓存到 `preview-<t*10>-<w>.jpg`。
+
+### `GET /api/media/{id}/download`
+
+以附件形式下载原始文件，文件名按 RFC 5987 用 `filename*=UTF-8''` 编码。
+
+### `GET /api/jobs/{jobId}/frames/{seq}`
+
+返回该任务第 `seq` 条画面证据对应的关键帧 JPEG（`seq` 从 0 开始，与 `/api/jobs/{id}/evidence` 的顺序一致），供前端在证据卡片里直接展示。
 
 ---
 
@@ -140,6 +168,10 @@ data: {"status":"SUCCEEDED","progress":100,"error":""}
 ```json
 { "goal": "换个角度讲讲证据校验", "mode": "REVIEW" }
 ```
+
+### `DELETE /api/jobs/{id}`
+
+删除单个任务：运行中会先取消，然后清理事件、转写、画面证据、上下文分块、报告、追问记录，以及该任务独有的关键帧、音频切片与 Word 文件（磁盘目录按 `frames/job-{id}`、`asr/job-{id}`、`audio/job-{id}` 隔离，不会影响同素材的其他任务）。
 
 ---
 

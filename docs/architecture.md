@@ -217,7 +217,41 @@ ReportComposer.markdown → 落库 + docx
 - 取消：`cancel` 先置 `CANCELED` 再 `future.cancel(true)`，流水线在下个阶段检查状态
 - SSE 与流水线解耦：前端刷新、断线重连都不影响任务本身
 
-## 6. 未做但值得做的
+## 6. 前端结构
+
+单页 Vue 3 应用，没有引入 UI 框架，样式是一套手写设计系统（`client/src/styles.css`，
+`--token` 双层：`:root` 暗色 + `:root[data-theme='light']` 亮色，布局用 grid-areas
+`topbar / sidebar main`）。
+
+| 文件 | 职责 |
+| --- | --- |
+| `App.vue` | 布局与状态中枢：上传、媒体库、任务列表、播放器、五个标签页、主题与抽屉 |
+| `api.js` | REST 封装、XHR 上传（带进度）、SSE 订阅（返回关闭函数） |
+| `format.js` | 时长/大小/相对时间的格式化，以及模式、状态、阶段、引擎的中文文案 |
+| `markdown.js` | Markdown 渲染 + `[mm:ss]` 转成可点胶囊 + 目录抽取 + 搜索高亮（手写扫描，避免正则注入） |
+| `components/JobCard.vue` | 任务卡片：状态色条、阶段与进度、悬停取消/删除 |
+| `components/ReportView.vue` | 报告正文、右侧目录、导出按钮、证据校验徽章、元信息 |
+| `components/TranscriptView.vue` | 转写与画面证据：过滤、搜索高亮、关键帧灯箱、时间戳联动 |
+| `components/ChatPanel.vue` | 追问对话：建议问题、Markdown 回答、引用时间戳可点 |
+| `components/RealtimePanel.vue` | 实时对话：麦克风采集、波形、状态与转写回显 |
+
+两个容易踩的点：
+
+1. **时间轴联动只有一条通路**：任何组件都不直接持有播放器，统一 `emit('seek', 'mm:ss')`
+   给 `App.vue`，由它 `video.currentTime = parseClock(clock)`。这样报告、追问、转写三处的
+   时间戳行为永远一致。
+2. **0 秒是合法时间点**：`formatDuration` 早期用 `if (!ms)` 判空，把 `00:00` 显示成 `--:--`；
+   现在只把 `null/undefined/NaN/负数` 当缺失。
+
+后端为界面新增的能力（播放、封面、关键帧、删除）：
+
+- `GET /api/media/{id}/stream` 支持单区间 `Range`，`video` 标签才能拖动进度条
+- `GET /api/media/{id}/thumbnail|frame` 抽帧后按时间点缓存到磁盘，重复请求不再调 ffmpeg
+- `GET /api/jobs/{jobId}/frames/{seq}` 让证据卡片直接显示关键帧，不用暴露服务器路径
+- `DELETE /api/jobs/{id}` 与级联的 `DELETE /api/media/{id}` 由 `CleanupService` 统一处理，
+  按 `job-{id}` 目录粒度删除，避免误删同素材其他任务的帧与音频
+
+## 7. 未做但值得做的
 
 - 视觉模型描述关键帧（当前只识别屏幕文字）
 - 说话人分离（`speaker` 字段已预留）
