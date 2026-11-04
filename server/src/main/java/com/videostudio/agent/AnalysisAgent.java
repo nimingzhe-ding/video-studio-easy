@@ -92,7 +92,24 @@ public class AnalysisAgent {
                 break;
             }
             log.info("job {} 第 {} 轮未通过校验：{}", request.jobId(), rounds, critique.feedback());
-            progress.accept("第 %d 轮未通过校验，补充证据后重写".formatted(rounds));
+            if (rounds < maxRounds) {
+                // 校验不过不能只是「把批评再喂回去重写一遍」——模型缺的是证据，不是措辞。
+                // 这里按 Critic 指出的缺口去全量证据里回捞片段，并用缺口拼一次新的检索。
+                int before = evidenceSegments.size() + evidenceVisuals.size();
+                ContextRenderer.Retrieved recalled = recallByCritique(request, critique);
+                evidenceSegments = expand(evidenceSegments, recalled.segments());
+                evidenceVisuals = expandVisual(evidenceVisuals, recalled.visuals());
+                List<HybridRetriever.Hit> extra = retriever.search(critiqueQuery(request.goal(), critique),
+                        request.chunks(), request.transcripts(), request.visuals());
+                for (HybridRetriever.Hit hit : extra) {
+                    evidenceSegments = expand(evidenceSegments, hit.segments());
+                    evidenceVisuals = expandVisual(evidenceVisuals, hit.evidences());
+                }
+                int added = evidenceSegments.size() + evidenceVisuals.size() - before;
+                log.info("job {} 第 {} 轮补充证据 {} 条（现有片段 {}、画面 {}）",
+                        request.jobId(), rounds, added, evidenceSegments.size(), evidenceVisuals.size());
+                progress.accept("第 %d 轮未通过校验，补充 %d 条证据后重写".formatted(rounds, Math.max(0, added)));
+            }
         }
 
         if (draft == null) {
@@ -287,6 +304,48 @@ public class AnalysisAgent {
     private String renderContext(String goal, List<TranscriptSegment> segments, List<VisualEvidence> visuals,
                                  List<ContextChunk> chunks) {
         return ContextRenderer.render(goal, new ContextRenderer.Retrieved(chunks, segments, visuals), props);
+    }
+
+    /** 按 Critic 给出的缺口时间戳，从全量证据里回捞片段（而不是只看已选中的那几条） */
+    private ContextRenderer.Retrieved recallByCritique(Request request, AgentModels.Critique critique) {
+        long margin = 0;
+        for (TranscriptSegment segment : request.transcripts()) {
+            margin = Math.max(margin, segment.endMs() - segment.startMs());
+        }
+        return ContextRenderer.recall(critique.requiredTimestamps(), request.transcripts(), request.visuals(), margin);
+    }
+
+    /** 把「目标 + 反馈 + 缺失要求 + 无依据论断」拼成一次新的检索语句 */
+    private static String critiqueQuery(String goal, AgentModels.Critique critique) {
+        StringBuilder sb = new StringBuilder(goal == null ? "" : goal);
+        if (!critique.feedback().isEmpty()) {
+            sb.append(' ').append(String.join(" ", critique.feedback()));
+        }
+        if (!critique.missingRequirements().isEmpty()) {
+            sb.append(' ').append(String.join(" ", critique.missingRequirements()));
+        }
+        if (!critique.unsupportedClaims().isEmpty()) {
+            sb.append(' ').append(String.join(" ", critique.unsupportedClaims()));
+        }
+        return Texts.truncate(sb.toString().strip(), 400);
+    }
+
+    private static List<TranscriptSegment> expand(List<TranscriptSegment> base, List<TranscriptSegment> extra) {
+        if (extra == null || extra.isEmpty()) {
+            return base;
+        }
+        List<TranscriptSegment> merged = new ArrayList<>(base);
+        merged.addAll(extra);
+        return dedupe(merged);
+    }
+
+    private static List<VisualEvidence> expandVisual(List<VisualEvidence> base, List<VisualEvidence> extra) {
+        if (extra == null || extra.isEmpty()) {
+            return base;
+        }
+        List<VisualEvidence> merged = new ArrayList<>(base);
+        merged.addAll(extra);
+        return dedupeVisual(merged);
     }
 
     private String ask(String system, String user, double temperature, Integer maxTokens, String purpose) {
