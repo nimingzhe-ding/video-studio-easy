@@ -121,4 +121,7 @@
 | 上下文不够用 | `agent.max-context-chars`（默认 24000）；注意超预算的条目会被跳过而不是截断 |
 | 多轮补充不到证据 | `ContextRenderer.recall` 的容差下限（当前 60 秒）与 `critiqueQuery` 的拼接口径 |
 | 模式判不准 | `ModeRouter.KEYWORDS` 的关键词表，或 `mode-router.md` 的模式定位描述 |
+| 两个人被并成一个讲者 | `SPEAKER_SPLIT_SEMITONES` 调到 `3.0`；注意低于 3 会把同一个人拆开 |
+| 同一个人被拆成两个讲者 | 调到 `5.0`；真正的解法是换声纹特征（见 architecture 3.11 已知边界） |
+| 单人视频不该有标签 | 只有一个讲者时本来就不打标签；确实需要连单人也不分析就关 `SPEAKER_SEPARATION_ENABLED` |
 | Word 里插图太多/太少 | `REPORT_MAX_FIGURES`（默认 8，`0` 关闭）；插图优先取被证据引用的帧，剩余按时间均匀取样 |

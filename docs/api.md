@@ -231,8 +231,20 @@ data: {"status":"SUCCEEDED","progress":100,"error":""}
 ### `GET /api/jobs/{id}/transcript?from=0&size=200`
 
 ```json
-{ "ok": true, "data": { "total": 3, "items": [ { "startMs": 0, "endMs": 3400, "text": "..." } ] } }
+{ "ok": true, "data": { "total": 3, "items": [
+  { "startMs": 0, "endMs": 3400, "text": "...", "speaker": "讲者 A", "source": "whisper" }
+] } }
 ```
+
+| 字段 | 说明 |
+| --- | --- |
+| `speaker` | 说话人标签（`讲者 A` / `讲者 B` …）。只有一个讲者、或关掉了 `SPEAKER_SEPARATION_ENABLED` 时为 `null` |
+| `source` | 转写引擎，`whisper` 或 `cloud-asr` |
+
+说话人标签由本地声学聚类得出（见 `docs/architecture.md` 3.11），因此同一段音频的
+标签是稳定的（讲者 A 永远是先开口的人），但不保证跨任务一致：同一素材的每个任务
+各跑一次聚类，分组编号可能不同。证据复用会连同标签一起复用，所以同一素材的
+后续任务标签与来源任务一致。
 
 ### `GET /api/jobs/{id}/evidence`
 
