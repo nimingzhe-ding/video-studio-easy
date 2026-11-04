@@ -80,7 +80,11 @@ public final class ContextRenderer {
             if (text.isBlank()) {
                 continue;
             }
-            String block = "- %s ASR: %s%n".formatted(segment.bracket(), text);
+            // 说话人写在来源之后：「[00:12 - 00:20] ASR（讲者 A）: 正文」。
+            // 这样既能让模型写出「谁提出了什么」，又不改变 ASR 前缀的位置，
+            // 已有一切按「ASR: 」切分的逻辑都不用动。
+            String who = Texts.isBlank(segment.speaker()) ? "ASR" : "ASR（" + segment.speaker() + "）";
+            String block = "- %s %s: %s%n".formatted(segment.bracket(), who, text);
             if (sb.length() + block.length() > budget) {
                 skipped++;
                 continue;

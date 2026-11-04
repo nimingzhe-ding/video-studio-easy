@@ -100,6 +100,17 @@ public class AppProperties {
         private int asrConcurrency = 3;
         /** 关键帧 OCR 并发度（Vision / tesseract 都可并行，建议 2-4） */
         private int ocrConcurrency = 3;
+        /**
+         * 是否做说话人分离。默认开启，因为它是纯本地计算（只读 pcm 采样点），
+         * 不产生任何外部调用与费用。
+         */
+        private boolean speakerSeparationEnabled = true;
+        /**
+         * 两个说话人的音高中位数相差多少半音就判为不同人。
+         * 4 个半音约等于大三度，是同一人情绪起伏的上限；再小容易把一个
+         * 说话人的激昂段落拆成两个人。
+         */
+        private double speakerSplitSemitones = 4.0;
 
         public String getFfmpeg() {
             return ffmpeg;
@@ -213,12 +224,28 @@ public class AppProperties {
             this.ocrConcurrency = ocrConcurrency;
         }
 
+        public boolean isSpeakerSeparationEnabled() {
+            return speakerSeparationEnabled;
+        }
+
+        public void setSpeakerSeparationEnabled(boolean speakerSeparationEnabled) {
+            this.speakerSeparationEnabled = speakerSeparationEnabled;
+        }
+
+        public double getSpeakerSplitSemitones() {
+            return speakerSplitSemitones;
+        }
+
+        public void setSpeakerSplitSemitones(double speakerSplitSemitones) {
+            this.speakerSplitSemitones = speakerSplitSemitones;
+        }
+
         /** 方便日志打印 */
         public String describe() {
             return String.format(Locale.ROOT,
-                    "ffmpeg=%s ffprobe=%s ocr=%s scene=%.2f frameInterval=%ds frameMax=%d asrConcurrency=%d ocrConcurrency=%d",
+                    "ffmpeg=%s ffprobe=%s ocr=%s scene=%.2f frameInterval=%ds frameMax=%d asrConcurrency=%d ocrConcurrency=%d speaker=%s split=%.1f",
                     ffmpeg, ffprobe, ocr, frameSceneThreshold, frameFallbackIntervalSeconds, frameMaxCount,
-                    asrConcurrency, ocrConcurrency);
+                    asrConcurrency, ocrConcurrency, speakerSeparationEnabled ? "on" : "off", speakerSplitSemitones);
         }
     }
 }

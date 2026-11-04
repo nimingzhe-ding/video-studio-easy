@@ -1,5 +1,6 @@
 package com.videostudio.service;
 
+import com.videostudio.config.AppProperties;
 import com.videostudio.domain.AnalysisJob;
 import com.videostudio.domain.ContextChunk;
 import com.videostudio.domain.TranscriptSegment;
@@ -34,13 +35,16 @@ public class EvidenceService {
     private final TranscriptRepository transcriptRepository;
     private final VisualRepository visualRepository;
     private final ChunkRepository chunkRepository;
+    private final AppProperties props;
 
     public EvidenceService(JobRepository jobRepository, TranscriptRepository transcriptRepository,
-                           VisualRepository visualRepository, ChunkRepository chunkRepository) {
+                           VisualRepository visualRepository, ChunkRepository chunkRepository,
+                           AppProperties props) {
         this.jobRepository = jobRepository;
         this.transcriptRepository = transcriptRepository;
         this.visualRepository = visualRepository;
         this.chunkRepository = chunkRepository;
+        this.props = props;
     }
 
     /**
@@ -83,6 +87,12 @@ public class EvidenceService {
                 if (segments.isEmpty() && visuals.isEmpty()) {
                     continue;
                 }
+                if (needsSpeakers() && lacksSpeakers(segments)) {
+                    // 这份转写是「说话人分离」上线之前生成的，直接复用它会让新能力永远不生效。
+                    // 跳过这一份，让流水线重新跑一次 ASR；跑完的带标签版本会被后续任务复用。
+                    log.info("任务 {} 的转写没有说话人标签，跳过复用（重新识别一次）", candidate.id());
+                    continue;
+                }
                 List<ContextChunk> chunks = chunkRepository.listByJob(candidate.id());
                 log.info("复用素材 {} 的证据：来源任务 {}，转写 {} 段、画面 {} 条、分块 {} 个",
                         assetId, candidate.id(), segments.size(), visuals.size(), chunks.size());
@@ -93,6 +103,26 @@ public class EvidenceService {
             }
         }
         return Reused.none();
+    }
+
+    private boolean needsSpeakers() {
+        return props.getMedia().isSpeakerSeparationEnabled();
+    }
+
+    /**
+     * 转写存在但一条说话人标签都没有。
+     * <p>没有任何转写（纯画面素材）不算「缺说话人」——那本来就不该有标签，不该因此拒绝复用。
+     */
+    private static boolean lacksSpeakers(List<TranscriptSegment> segments) {
+        if (segments.isEmpty()) {
+            return false;
+        }
+        for (TranscriptSegment segment : segments) {
+            if (segment.speaker() != null && !segment.speaker().isBlank()) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /** 画证据的帧文件是否还在磁盘上（任务目录被清理过就只剩 DB 行，不能再复用） */

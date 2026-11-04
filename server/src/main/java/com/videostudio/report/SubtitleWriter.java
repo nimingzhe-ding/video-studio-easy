@@ -119,6 +119,13 @@ public final class SubtitleWriter {
 
     private static String body(TranscriptSegment segment) {
         // 字幕里不能出现换行，否则部分播放器会截断这条字幕
-        return Texts.normalizeWhitespace(segment.text()).replace("\n", " ");
+        String text = Texts.normalizeWhitespace(segment.text()).replace("\n", " ");
+        // 有说话人时用「讲者 A：正文」的写法。SRT/VTT 没有官方的说话人字段，
+        // 主流播放器与剪辑软件（YouTube、Premiere、Final Cut）都认这种行内前缀；
+        // 用单独的「- 」破折号前缀会把「谁在说」和「说了什么」混在一起，导出到字幕编辑器里反而难处理。
+        if (Texts.isBlank(segment.speaker())) {
+            return text;
+        }
+        return segment.speaker() + "：" + text;
     }
 }

@@ -13,6 +13,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -42,14 +43,16 @@ public class TranscriptionService {
     private final CloudSpeechRecognizer cloud;
     private final WhisperCliRecognizer whisper;
     private final AudioExtractor audioExtractor;
+    private final SpeakerDiarizer diarizer;
     private final AppProperties props;
     private final ExecutorService pool;
 
     public TranscriptionService(CloudSpeechRecognizer cloud, WhisperCliRecognizer whisper,
-                                AudioExtractor audioExtractor, AppProperties props) {
+                                AudioExtractor audioExtractor, SpeakerDiarizer diarizer, AppProperties props) {
         this.cloud = cloud;
         this.whisper = whisper;
         this.audioExtractor = audioExtractor;
+        this.diarizer = diarizer;
         this.props = props;
         int threads = Math.max(1, props.getMedia().getAsrConcurrency());
         AtomicInteger seq = new AtomicInteger();
@@ -65,9 +68,14 @@ public class TranscriptionService {
         pool.shutdownNow();
     }
 
-    public record Outcome(List<TranscriptSegment> segments, String engine, List<String> warnings) {
+    public record Outcome(List<TranscriptSegment> segments, String engine, List<String> warnings, int speakers) {
         public boolean empty() {
             return segments == null || segments.isEmpty();
+        }
+
+        /** 兼容不需要说话人数量的调用方 */
+        public Outcome(List<TranscriptSegment> segments, String engine, List<String> warnings) {
+            this(segments, engine, warnings, 0);
         }
     }
 
@@ -125,9 +133,19 @@ public class TranscriptionService {
             }
         }
         segments.sort(java.util.Comparator.comparingLong(TranscriptSegment::startMs));
-        log.info("转写完成 engine={} slices={} concurrency={} segments={} warnings={}",
-                engine, slices.size(), props.getMedia().getAsrConcurrency(), segments.size(), warnings.size());
-        return new Outcome(merge(segments), engine, warnings);
+
+        // 说话人分离必须在合并之前：合并会生成一个跨越几个片段的「长句」，
+        // 之后就没法再把里面的换人切出来了。
+        SpeakerDiarizer.Outcome diarized = diarizer.assign(wav, segments);
+        segments = diarized.segments();
+        if (diarized.split()) {
+            progress.accept("说话人分离 %d 人".formatted(diarized.speakers()));
+        }
+
+        log.info("转写完成 engine={} slices={} concurrency={} segments={} speakers={} warnings={}",
+                engine, slices.size(), props.getMedia().getAsrConcurrency(), segments.size(),
+                diarized.speakers(), warnings.size());
+        return new Outcome(merge(segments), engine, warnings, diarized.speakers());
     }
 
     private record SliceResult(AudioExtractor.Slice slice, SpeechRecognizer.Result recognized) {
@@ -170,7 +188,10 @@ public class TranscriptionService {
                 TranscriptSegment last = merged.get(merged.size() - 1);
                 boolean close = s.startMs() - last.endMs() < 800;
                 boolean shortPiece = last.text().length() < 80;
-                if (close && shortPiece) {
+                // 不同说话人的两句话永远不合并：拼起来会让「谁说的」彻底丢失，
+                // 而说话人恰恰是会议、访谈这类素材里最需要的信息
+                boolean sameSpeaker = Objects.equals(last.speaker(), s.speaker());
+                if (close && shortPiece && sameSpeaker) {
                     merged.set(merged.size() - 1, new TranscriptSegment(last.startMs(), Math.max(last.endMs(), s.endMs()),
                             (last.text() + " " + s.text()).strip(), last.speaker(), last.confidence(), last.source()));
                     continue;

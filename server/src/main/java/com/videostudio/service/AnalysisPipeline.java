@@ -45,8 +45,10 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 
@@ -216,8 +218,9 @@ public class AnalysisPipeline {
             asrEngine = outcome.engine();
             outcome.warnings().forEach(run::warn);
             transcriptRepository.replace(asset.id(), run.jobId, transcripts);
+            String speakerNote = outcome.speakers() > 1 ? "，%d 位说话人".formatted(outcome.speakers()) : "";
             run.emit(JobStage.TRANSCRIBE, JobEvent.TYPE_METRIC, "info", JobStage.TRANSCRIBE.floor(),
-                    "转写 %d 段（引擎 %s）".formatted(transcripts.size(), asrEngine));
+                    "转写 %d 段（引擎 %s%s）".formatted(transcripts.size(), asrEngine, speakerNote));
         } else {
             run.warn("该文件没有音频轨，跳过语音识别");
         }
@@ -324,6 +327,10 @@ public class AnalysisPipeline {
         trace.put("tasks", outcome.plan().tasks());
         trace.put("understoodGoal", outcome.plan().understoodGoal());
         trace.put("transcriptSegments", transcripts.size());
+        int speakerCount = speakers(transcripts);
+        if (speakerCount > 1) {
+            trace.put("speakers", speakerCount);
+        }
         trace.put("visualEvidence", visuals.size());
         int captionedCount = captionCount(visuals);
         if (captionedCount > 0) {
@@ -356,6 +363,17 @@ public class AnalysisPipeline {
                 : "本地 OCR";
         String llm = aiProps.cloudEnabled() ? "大模型 " + aiProps.getModel() : "离线模板";
         return "%s + %s + %s".formatted(asr, ocr, llm);
+    }
+
+    /** 不同说话人的数量；没有标签时返回 0 */
+    private static int speakers(List<TranscriptSegment> transcripts) {
+        Set<String> names = new LinkedHashSet<>();
+        for (TranscriptSegment segment : transcripts) {
+            if (!Texts.isBlank(segment.speaker())) {
+                names.add(segment.speaker());
+            }
+        }
+        return names.size();
     }
 
     private static int captionCount(List<VisualEvidence> visuals) {

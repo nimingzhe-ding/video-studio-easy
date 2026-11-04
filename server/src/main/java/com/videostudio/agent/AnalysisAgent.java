@@ -231,7 +231,10 @@ public class AnalysisAgent {
                 continue;
             }
             conclusions.add(text);
-            evidence.add(new AgentModels.Evidence(segment.startMs(), "ASR", text, text));
+            // 说话人写进 source：报告里的证据行会显示成「ASR（讲者 A）」，读者一眼能看到谁说的；
+            // 校验器只做 source.contains("ASR")，加后缀不影响原有判定。
+            String source = Texts.isBlank(segment.speaker()) ? "ASR" : "ASR（" + segment.speaker() + "）";
+            evidence.add(new AgentModels.Evidence(segment.startMs(), source, text, text));
         }
         List<AgentModels.Section> sections = new ArrayList<>();
         List<String> hints = mode.outlineHints();
