@@ -84,6 +84,12 @@ function openImage(url) {
       <button class="ghost icon" title="刷新" :disabled="loading" @click="load">
         <span :class="{ spin: loading }">↻</span>
       </button>
+      <div class="export-group" v-if="segments.length">
+        <span class="muted small">导出字幕</span>
+        <a class="chip" :href="api.subtitleUrl(jobId, 'srt')">SRT</a>
+        <a class="chip" :href="api.subtitleUrl(jobId, 'vtt')">VTT</a>
+        <a class="chip" :href="api.subtitleUrl(jobId, 'txt')">TXT</a>
+      </div>
     </div>
 
     <div v-if="error" class="notice err" style="margin: 12px 16px">{{ error }}</div>
@@ -147,6 +153,28 @@ function openImage(url) {
   font-size: 10.5px;
   color: var(--faint);
   margin-top: 2px;
+}
+
+.export-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.export-group .chip {
+  padding: 4px 10px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text-soft);
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.export-group .chip:hover {
+  border-color: var(--accent);
+  color: var(--accent-strong);
 }
 
 .transcript-foot {

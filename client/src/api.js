@@ -186,6 +186,8 @@ export const api = {
   frameUrl: (jobId, seq) => `${BASE}/api/jobs/${jobId}/frames/${seq}`,
   docxUrl: (jobId) => `${BASE}/api/jobs/${jobId}/report/docx`,
   markdownUrl: (jobId) => `${BASE}/api/jobs/${jobId}/report/markdown`,
+  /** 字幕导出：srt / vtt / txt，与报告里的时间戳同源 */
+  subtitleUrl: (jobId, format = 'srt') => `${BASE}/api/jobs/${jobId}/report/subtitle?format=${format}`,
 
   /**
    * SSE 订阅任务事件。返回关闭函数，组件卸载时务必调用。
