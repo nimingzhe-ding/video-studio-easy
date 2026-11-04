@@ -610,6 +610,13 @@ function toggleTheme() {
               <span>实时对话</span><div class="grow" />
               <span class="badge" :class="runtime.realtimeEnabled ? 'ok' : ''">{{ runtime.realtimeEnabled ? '可用' : '未配置' }}</span>
             </div>
+            <div class="row">
+              <span>画面描述</span><div class="grow" />
+              <span class="badge" :class="runtime.visionCaptionEnabled ? 'accent' : ''"
+                    :title="runtime.visionCaptionEnabled ? '会对没有文字的帧调用视觉模型' : '默认关闭，避免按帧计费'">
+                {{ runtime.visionCaptionEnabled ? '已开启' : '关闭' }}
+              </span>
+            </div>
             <div class="hint">未配置 AI_API_KEY 时，转写、OCR、检索仍可用，报告走离线模板。</div>
           </div>
         </div>
