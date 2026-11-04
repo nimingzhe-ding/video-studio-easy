@@ -58,6 +58,25 @@ function displayText(item) {
   return item.ocrText || item.caption || '';
 }
 
+// 说话人配色：按出现的先后顺序分配，同一份转写里颜色稳定
+const SPEAKER_COLORS = ['#4f8cff', '#35c07f', '#e0a63c', '#c07ce0', '#3fb9c9', '#e5824b'];
+const speakerNames = computed(() => {
+  const seen = [];
+  for (const seg of segments.value) {
+    if (seg.speaker && !seen.includes(seg.speaker)) {
+      seen.push(seg.speaker);
+    }
+  }
+  return seen;
+});
+const speakerColor = computed(() => {
+  const map = {};
+  speakerNames.value.forEach((name, i) => {
+    map[name] = SPEAKER_COLORS[i % SPEAKER_COLORS.length];
+  });
+  return map;
+});
+
 const totalWords = computed(() =>
   segments.value.reduce((sum, seg) => sum + (seg.text ? seg.text.replace(/\s/g, '').length : 0), 0)
 );
@@ -115,7 +134,14 @@ function openImage(url) {
             <span class="ts" @click="jump(seg.startMs)">{{ formatDuration(seg.startMs) }}</span>
             <div class="dur">{{ formatDuration(seg.endMs - seg.startMs) }}</div>
           </div>
-          <div class="seg-text" v-html="highlight(seg.text, keyword)" />
+          <div class="seg-body">
+            <span
+              v-if="seg.speaker"
+              class="speaker"
+              :style="{ color: speakerColor[seg.speaker], borderColor: speakerColor[seg.speaker] }"
+            >{{ seg.speaker }}</span>
+            <div class="seg-text" v-html="highlight(seg.text, keyword)" />
+          </div>
         </div>
       </div>
 
@@ -145,6 +171,7 @@ function openImage(url) {
 
       <div v-if="!keyword" class="transcript-foot">
         共 {{ segments.length }} 段语音、{{ evidence.length }} 条画面证据，约 {{ totalWords }} 字
+        <template v-if="speakerNames.length > 1">· {{ speakerNames.length }} 位说话人</template>
         <template v-if="durationMs">· 覆盖 {{ formatDuration(durationMs) }}</template>
       </div>
     </template>
@@ -160,6 +187,23 @@ function openImage(url) {
   font-size: 10.5px;
   color: var(--faint);
   margin-top: 2px;
+}
+
+/* 说话人标签和正文放在同一列，避免标签占掉一整行的高度 */
+.seg-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.speaker {
+  display: inline-block;
+  margin-bottom: 4px;
+  padding: 1px 7px;
+  border: 1px solid currentColor;
+  border-radius: 20px;
+  font-size: 10.5px;
+  line-height: 1.5;
+  opacity: 0.9;
 }
 
 .export-group {
