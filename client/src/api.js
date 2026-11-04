@@ -22,6 +22,48 @@ function json(body) {
   return { method: 'POST', body: JSON.stringify(body) };
 }
 
+/**
+ * 单片上传。用 fetch + FormData，返回后端的最新会话状态。
+ */
+async function putChunk(uploadId, index, blob, signal) {
+  const form = new FormData();
+  form.append('file', blob, `chunk-${index}`);
+  const response = await fetch(`${BASE}/api/uploads/${encodeURIComponent(uploadId)}/chunks/${index}`, {
+    method: 'PUT',
+    body: form,
+    signal
+  });
+  const text = await response.text();
+  let payload = null;
+  try {
+    payload = text ? JSON.parse(text) : null;
+  } catch (e) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+  if (!response.ok || (payload && payload.ok === false)) {
+    throw new Error((payload && payload.message) || `HTTP ${response.status}`);
+  }
+  return payload.data;
+}
+
+/**
+ * 由文件元信息派生稳定的 uploadId。
+ *
+ * <p>不用内容哈希：几十 GB 的文件算一遍 SHA-256 可能要几分钟，而「同一个文件再次上传」
+ * 在浏览器里几乎总是同名同大小同修改时间，用这三者拼出来足够稳定。
+ */
+export function chunkUploadId(file) {
+  const raw = `${file.name}|${file.size}|${file.lastModified || 0}`;
+  let hash = 0;
+  for (let i = 0; i < raw.length; i++) {
+    hash = (hash * 31 + raw.charCodeAt(i)) >>> 0;
+  }
+  return `up-${hash.toString(16)}-${file.size}`;
+}
+
+/** 超过这个大小就走分片上传；下面的配置从服务端获取失败时用它兜底 */
+export const CHUNK_THRESHOLD = 32 * 1024 * 1024;
+
 export const api = {
   runtime: () => request('/api/jobs/runtime'),
 
@@ -57,6 +99,70 @@ export const api = {
       xhr.onerror = () => reject(new Error('上传中断，请检查后端是否在线'));
       xhr.send(form);
     });
+  },
+
+  uploadPolicy: () => request('/api/uploads/policy'),
+  uploadStatus: (uploadId) => request(`/api/uploads/${encodeURIComponent(uploadId)}`),
+  cancelUpload: (uploadId) => request(`/api/uploads/${encodeURIComponent(uploadId)}`, { method: 'DELETE' }),
+
+  /**
+   * 分片上传：按服务端给的分片大小切片，逐片 PUT，最后合并。
+   *
+   * <p>断点续传靠 uploadId：同一个文件重新上传时用同一个 id，先 init 拿回
+   * {@code receivedIndexes}，跳过已经收到过的片。uploadId 用「文件名+大小+最后修改时间」
+   * 拼出来，既稳定又不用把文件内容读一遍算哈希（大文件算哈希本身就要几十秒）。
+   *
+   * <p>单片失败重试 3 次（指数退避）；仍失败则抛出，由调用方展示"继续上传"。
+   */
+  async uploadChunked(file, { uploadId, onProgress, signal } = {}) {
+    const id = uploadId || chunkUploadId(file);
+    const session = await request('/api/uploads', {
+      method: 'POST',
+      body: JSON.stringify({ uploadId: id, name: file.name, totalBytes: file.size })
+    });
+    const chunkSize = session.chunkSize;
+    const received = new Set(session.receivedIndexes || []);
+    const total = session.totalChunks;
+    let uploadedBytes = session.receivedBytes || 0;
+
+    const report = (bytes) => {
+      if (onProgress) {
+        onProgress(Math.min(99, Math.round((bytes / file.size) * 100)));
+      }
+    };
+    report(uploadedBytes);
+
+    for (let index = 0; index < total; index++) {
+      if (received.has(index)) {
+        continue;
+      }
+      if (signal && signal.aborted) {
+        throw new DOMException('已取消上传', 'AbortError');
+      }
+      const start = index * chunkSize;
+      const blob = file.slice(start, Math.min(start + chunkSize, file.size));
+      let attempt = 0;
+      for (;;) {
+        try {
+          await putChunk(id, index, blob, signal);
+          break;
+        } catch (e) {
+          attempt++;
+          if (attempt >= 3 || (signal && signal.aborted)) {
+            throw new Error(`第 ${index + 1}/${total} 片上传失败：${e.message}`);
+          }
+          await new Promise((r) => setTimeout(r, 300 * attempt));
+        }
+      }
+      uploadedBytes += blob.size;
+      report(uploadedBytes);
+    }
+
+    const result = await request(`/api/uploads/${encodeURIComponent(id)}/complete`, { method: 'POST' });
+    if (onProgress) {
+      onProgress(100);
+    }
+    return result.media;
   },
 
   listJobs: (limit = 50) => request(`/api/jobs?limit=${limit}`),

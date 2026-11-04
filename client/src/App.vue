@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
-import { api } from './api';
+import { api, CHUNK_THRESHOLD, chunkUploadId } from './api';
 import {
   MODE_LABELS,
   STAGE_LABELS,
@@ -37,7 +37,8 @@ const mediaFilter = ref('');
 const themeParam = new URLSearchParams(location.search).get('theme');
 const theme = ref(themeParam === 'light' || themeParam === 'dark' ? themeParam : localStorage.getItem('vse-theme') || 'dark');
 const player = ref(null);
-const upload = reactive({ percent: 0, name: '', active: false });
+const upload = reactive({ percent: 0, name: '', size: 0, active: false, chunked: false, error: '' });
+let uploadController = null;
 const form = reactive({ mode: 'GENERAL', goal: '', title: '' });
 
 const modes = Object.entries(MODE_LABELS).map(([value, label]) => ({ value, label }));
@@ -231,19 +232,50 @@ async function onFiles(files) {
   busy.value = true;
   upload.active = true;
   upload.name = file.name;
+  upload.size = file.size;
   upload.percent = 0;
+  upload.chunked = file.size > CHUNK_THRESHOLD;
+  upload.error = '';
+  const controller = new AbortController();
+  uploadController = controller;
   try {
-    const asset = await api.upload(file, (percent) => (upload.percent = percent));
+    const onProgress = (percent) => (upload.percent = percent);
+    const asset = upload.chunked
+      ? await api.uploadChunked(file, {
+          uploadId: chunkUploadId(file),
+          onProgress,
+          signal: controller.signal
+        })
+      : await api.upload(file, onProgress);
     notify(`已上传「${asset.name}」，时长 ${formatDuration(asset.durationMs)}`, 'ok');
     media.value = (await api.listMedia(100)) || [];
     activeAssetId.value = asset.id;
   } catch (e) {
-    notify(e.message, 'err');
+    if (e.name === 'AbortError') {
+      notify('已取消上传', 'warn');
+    } else {
+      // 大文件保留在队列里，用户可以原样点"继续上传"从断点续传
+      upload.error = e.message;
+      notify(e.message, 'err');
+    }
   } finally {
+    uploadController = null;
     busy.value = false;
     upload.active = false;
     upload.percent = 0;
     upload.name = '';
+    upload.size = 0;
+  }
+}
+
+function cancelUpload() {
+  uploadController?.abort();
+}
+
+async function resumeUpload(event) {
+  const file = event?.target?.files?.[0];
+  if (file) {
+    onFiles([file]);
   }
 }
 
@@ -442,10 +474,29 @@ function toggleTheme() {
           >
             <div class="drop-icon">⤒</div>
             <div class="drop-title">{{ upload.active ? upload.name : '拖入文件或点击选择' }}</div>
-            <div class="drop-hint">支持 mp4 / mov / mkv / mp3 / wav / m4a</div>
+            <div class="drop-hint">
+              <template v-if="upload.active">
+                {{ upload.chunked ? '分片上传' : '直传' }} · {{ formatSize(upload.size) }} ·
+                {{ upload.percent }}%
+              </template>
+              <template v-else>支持 mp4 / mov / mkv / mp3 / wav / m4a</template>
+            </div>
             <div v-if="upload.active" class="progress" style="margin-top: 10px">
               <i :style="{ width: `${upload.percent}%` }" />
             </div>
+          </div>
+
+          <div v-if="upload.active && upload.chunked" class="row" style="margin-top: 8px">
+            <span class="hint grow">分片上传支持断点续传，中断后可重新选择同一文件继续</span>
+            <button class="ghost small" type="button" @click.stop="cancelUpload">取消</button>
+          </div>
+
+          <div v-if="upload.error" class="notice err" style="margin-top: 8px">
+            <span class="grow">{{ upload.error }}</span>
+            <label class="ghost small" style="cursor: pointer">
+              继续上传
+              <input type="file" hidden accept="video/*,audio/*,.mkv,.m4a" @change="resumeUpload" />
+            </label>
           </div>
           <input
             id="file-input"
