@@ -39,9 +39,12 @@ const theme = ref(themeParam === 'light' || themeParam === 'dark' ? themeParam :
 const player = ref(null);
 const upload = reactive({ percent: 0, name: '', size: 0, active: false, chunked: false, error: '' });
 let uploadController = null;
-const form = reactive({ mode: 'GENERAL', goal: '', title: '' });
+const form = reactive({ mode: 'AUTO', goal: '', title: '' });
 
-const modes = Object.entries(MODE_LABELS).map(([value, label]) => ({ value, label }));
+const modes = [
+  { value: 'AUTO', label: '自动判断' },
+  ...Object.entries(MODE_LABELS).map(([value, label]) => ({ value, label }))
+];
 
 const asset = computed(() => {
   const assetId = activeAssetId.value ?? selected.value?.assetId ?? detail.value?.job?.assetId;
@@ -301,7 +304,7 @@ async function startAnalysis(target = asset.value) {
   try {
     const created = await api.submitJob({
       assetId: target.id,
-      mode: form.mode,
+      mode: form.mode === 'AUTO' ? '' : form.mode,
       goal: form.goal.trim(),
       title: form.title.trim()
     });
@@ -324,7 +327,7 @@ async function reanalyze() {
   try {
     const created = await api.reanalyze(job.value.id, {
       goal: form.goal.trim() || job.value.focus,
-      mode: form.mode
+      mode: form.mode === 'AUTO' ? '' : form.mode
     });
     notify('已用同一份证据重新分析', 'ok');
     jobs.value = (await api.listJobs(100)) || [];
@@ -636,7 +639,12 @@ function toggleTheme() {
               </div>
 
               <div class="job-meta">
-                <span>{{ MODE_LABELS[job.mode] || job.mode }}</span>
+                <span>
+                  {{ MODE_LABELS[job.mode] || job.mode }}
+                  <span v-if="job.modeSource === 'AUTO' || job.modeSource === 'RULE'" class="muted small">
+                    · {{ job.modeSource === 'AUTO' ? '模型判定' : '规则判定' }}
+                  </span>
+                </span>
                 <span v-if="assetName">素材 {{ assetName }}</span>
                 <span v-if="asset">时长 {{ formatDuration(asset.durationMs) }}</span>
                 <span>创建 {{ formatDateTime(job.createdAt) }}</span>
@@ -644,6 +652,7 @@ function toggleTheme() {
               </div>
 
               <div v-if="job.focus" class="hint">目标：{{ job.focus }}</div>
+              <div v-if="job.modeReason" class="hint muted">模式判定：{{ job.modeReason }}</div>
 
               <template v-if="running">
                 <div class="stage-row">
