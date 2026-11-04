@@ -12,6 +12,7 @@ public class AppProperties {
 
     private final Storage storage = new Storage();
     private final Media media = new Media();
+    private final Upload upload = new Upload();
 
     public Storage getStorage() {
         return storage;
@@ -19,6 +20,10 @@ public class AppProperties {
 
     public Media getMedia() {
         return media;
+    }
+
+    public Upload getUpload() {
+        return upload;
     }
 
     public static class Storage {
@@ -43,6 +48,41 @@ public class AppProperties {
         }
     }
 
+    /**
+     * 分片上传参数。
+     * <p>分片大小默认 8MB：小到断线时最多重传 8MB，大到不会让请求数爆掉
+     * （2 小时 1080p 约 1.5GB → 190 片）。
+     */
+    public static class Upload {
+        private int chunkSizeBytes = 8 * 1024 * 1024;
+        private int maxChunks = 20000;
+        private int retentionHours = 24;
+
+        public int getChunkSizeBytes() {
+            return chunkSizeBytes;
+        }
+
+        public void setChunkSizeBytes(int chunkSizeBytes) {
+            this.chunkSizeBytes = chunkSizeBytes;
+        }
+
+        public int getMaxChunks() {
+            return maxChunks;
+        }
+
+        public void setMaxChunks(int maxChunks) {
+            this.maxChunks = maxChunks;
+        }
+
+        public int getRetentionHours() {
+            return retentionHours;
+        }
+
+        public void setRetentionHours(int retentionHours) {
+            this.retentionHours = retentionHours;
+        }
+    }
+
     public static class Media {
         private String ffmpeg = "ffmpeg";
         private String ffprobe = "ffprobe";
@@ -56,6 +96,10 @@ public class AppProperties {
         private int frameWidth = 960;
         private int asrSegmentSeconds = 60;
         private int segmentSeconds = 60;
+        /** ASR 分片并发度（云端优先，本地 whisper 受 CPU 限制，建议不超过核数的一半） */
+        private int asrConcurrency = 3;
+        /** 关键帧 OCR 并发度（Vision / tesseract 都可并行，建议 2-4） */
+        private int ocrConcurrency = 3;
 
         public String getFfmpeg() {
             return ffmpeg;
@@ -153,11 +197,28 @@ public class AppProperties {
             this.segmentSeconds = segmentSeconds;
         }
 
+        public int getAsrConcurrency() {
+            return asrConcurrency;
+        }
+
+        public void setAsrConcurrency(int asrConcurrency) {
+            this.asrConcurrency = asrConcurrency;
+        }
+
+        public int getOcrConcurrency() {
+            return ocrConcurrency;
+        }
+
+        public void setOcrConcurrency(int ocrConcurrency) {
+            this.ocrConcurrency = ocrConcurrency;
+        }
+
         /** 方便日志打印 */
         public String describe() {
             return String.format(Locale.ROOT,
-                    "ffmpeg=%s ffprobe=%s ocr=%s scene=%.2f frameInterval=%ds frameMax=%d",
-                    ffmpeg, ffprobe, ocr, frameSceneThreshold, frameFallbackIntervalSeconds, frameMaxCount);
+                    "ffmpeg=%s ffprobe=%s ocr=%s scene=%.2f frameInterval=%ds frameMax=%d asrConcurrency=%d ocrConcurrency=%d",
+                    ffmpeg, ffprobe, ocr, frameSceneThreshold, frameFallbackIntervalSeconds, frameMaxCount,
+                    asrConcurrency, ocrConcurrency);
         }
     }
 }

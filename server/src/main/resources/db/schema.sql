@@ -116,3 +116,26 @@ CREATE TABLE IF NOT EXISTS chat_message (
     created_at    TIMESTAMP     NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_chat_job ON chat_message (job_id, id);
+
+-- 分片上传会话：断点续传靠它记录「哪些片已经收到」
+CREATE TABLE IF NOT EXISTS upload_session (
+    upload_id     VARCHAR(128) PRIMARY KEY,
+    name          VARCHAR(512) NOT NULL,
+    total_bytes   BIGINT       NOT NULL,
+    total_chunks  INT          NOT NULL,
+    chunk_size    INT          NOT NULL,
+    received      INT          NOT NULL DEFAULT 0,
+    asset_id      BIGINT,
+    created_at    TIMESTAMP    NOT NULL,
+    updated_at    TIMESTAMP    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_upload_updated ON upload_session (updated_at);
+
+-- 分片本身也落库：进程重启后仍能判断某一片是否真的写过（避免只信任内存计数）
+CREATE TABLE IF NOT EXISTS upload_chunk (
+    upload_id     VARCHAR(128) NOT NULL,
+    chunk_index   INT          NOT NULL,
+    size_bytes    BIGINT       NOT NULL,
+    created_at    TIMESTAMP    NOT NULL,
+    PRIMARY KEY (upload_id, chunk_index)
+);

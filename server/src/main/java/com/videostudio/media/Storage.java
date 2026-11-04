@@ -53,12 +53,38 @@ public class Storage {
         return ensure(mediaDir(assetId).resolve("frames").resolve("job-" + jobId));
     }
 
+    /** 分片上传会话目录：与正式媒体分开，合并成功后才搬到 media/{assetId} */
+    public Path uploadDir(String uploadId) {
+        return ensure(root.resolve("uploads").resolve(safe(uploadId)));
+    }
+
+    /** 单个分片文件，统一零填充命名，便于按序号遍历 */
+    public Path uploadChunk(String uploadId, int index) {
+        return uploadDir(uploadId).resolve("chunk-%06d.part".formatted(index));
+    }
+
+    public Path uploadManifest(String uploadId) {
+        return uploadDir(uploadId).resolve("session.json");
+    }
+
     public Path reportDir(long assetId) {
         return ensure(mediaDir(assetId).resolve("report"));
     }
 
     public Path reportDocx(long assetId, long jobId) {
         return reportDir(assetId).resolve("report-" + jobId + ".docx");
+    }
+
+    /** uploadId 来自客户端，必须剔除路径分隔符，避免目录穿越 */
+    private String safe(String id) {
+        if (id == null || id.isBlank()) {
+            throw new IllegalArgumentException("uploadId 不能为空");
+        }
+        String cleaned = id.replaceAll("[^A-Za-z0-9._-]", "");
+        if (cleaned.isEmpty() || cleaned.equals(".") || cleaned.equals("..")) {
+            throw new IllegalArgumentException("非法的 uploadId");
+        }
+        return cleaned.length() > 96 ? cleaned.substring(0, 96) : cleaned;
     }
 
     /** 取扩展名（含点），未知时退化为 .bin */
