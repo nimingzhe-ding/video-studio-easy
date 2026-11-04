@@ -30,7 +30,8 @@ const meta = computed(() => {
     verified: trace.verified,
     chunks: trace.chunks,
     evidences: trace.visualEvidence,
-    segments: trace.transcriptSegments
+    segments: trace.transcriptSegments,
+    figures: trace.docxFigures || 0
   };
 });
 
@@ -95,7 +96,9 @@ function printReport() {
   <div v-else>
     <div class="report-actions">
       <button class="secondary" @click="copyMarkdown">{{ copied ? '✓ 已复制' : '复制 Markdown' }}</button>
-      <a class="btn-link" :href="api.docxUrl(jobId)">下载 Word</a>
+      <a class="btn-link" :href="api.docxUrl(jobId)">
+        下载 Word<span v-if="meta.figures" class="muted small"> · {{ meta.figures }} 图</span>
+      </a>
       <a class="btn-link" :href="api.markdownUrl(jobId)" target="_blank" rel="noopener">查看原文</a>
       <button class="ghost" @click="printReport">打印</button>
       <div class="grow" />
