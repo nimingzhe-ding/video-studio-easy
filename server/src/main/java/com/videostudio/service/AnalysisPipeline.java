@@ -72,6 +72,7 @@ public class AnalysisPipeline {
     private final VisualEvidenceService visualService;
     private final ChunkEnricher chunkEnricher;
     private final AnalysisAgent agent;
+    private final EvidenceService evidenceService;
     private final DocxExporter docxExporter;
     private final Storage storage;
     private final AgentProperties agentProps;
@@ -83,7 +84,8 @@ public class AnalysisPipeline {
                             ReportRepository reportRepository, MediaProbe probe, AudioExtractor audioExtractor,
                             FrameExtractor frameExtractor, TranscriptionService transcriptionService,
                             VisualEvidenceService visualService, ChunkEnricher chunkEnricher,
-                            AnalysisAgent agent, DocxExporter docxExporter, Storage storage,
+                            AnalysisAgent agent, EvidenceService evidenceService, DocxExporter docxExporter,
+                            Storage storage,
                             AgentProperties agentProps, AiProperties aiProps) {
         this.mediaRepository = mediaRepository;
         this.jobRepository = jobRepository;
@@ -99,6 +101,7 @@ public class AnalysisPipeline {
         this.visualService = visualService;
         this.chunkEnricher = chunkEnricher;
         this.agent = agent;
+        this.evidenceService = evidenceService;
         this.docxExporter = docxExporter;
         this.storage = storage;
         this.agentProps = agentProps;
@@ -182,10 +185,23 @@ public class AnalysisPipeline {
                 "时长 %s，分辨率 %s".formatted(Times.human(run.durationMs),
                         info.width() == null ? "音频" : info.width() + "x" + info.height()));
 
+        // ---- 证据复用：转写与 OCR 只取决于素材内容，与本次目标无关，同素材已有成功任务就直接拿来用
+        EvidenceService.Reused reused = evidenceService.findReusable(asset.id(), run.jobId);
+        if (reused.present() && !evidenceService.framesAvailable(reused.visuals())) {
+            run.warn("历史关键帧文件已被清理，本次重新抽取画面证据");
+            reused = new EvidenceService.Reused(reused.sourceJobId(), reused.segments(), List.of(), List.of());
+        }
+
         // ---- 语音：抽音频 → 切片 → ASR
         List<TranscriptSegment> transcripts = List.of();
         String asrEngine = "none";
-        if (info.hasAudio()) {
+        if (!reused.segments().isEmpty()) {
+            transcripts = reused.segments();
+            asrEngine = transcripts.get(0).source() == null ? "reused" : transcripts.get(0).source();
+            transcriptRepository.replace(asset.id(), run.jobId, transcripts);
+            run.emit(JobStage.TRANSCRIBE, JobEvent.TYPE_LOG, "info", JobStage.TRANSCRIBE.floor(),
+                    "复用任务 %d 的转写（%d 段），跳过语音识别".formatted(reused.sourceJobId(), transcripts.size()));
+        } else if (info.hasAudio()) {
             run.stage(JobStage.AUDIO, "抽取音频轨");
             Path wav = audioExtractor.extract(source, storage.audioFile(asset.id(), run.jobId));
             run.stage(JobStage.TRANSCRIBE, "语音识别中");
@@ -204,7 +220,14 @@ public class AnalysisPipeline {
         // ---- 画面：关键帧 → OCR
         List<VisualEvidence> visuals = List.of();
         String visualEngine = null;
-        if (info.hasVideo() && asset.kind() == MediaKind.VIDEO) {
+        if (!reused.visuals().isEmpty()) {
+            visuals = evidenceService.copyFrames(reused.visuals(), storage.frameDir(asset.id(), run.jobId));
+            visualEngine = visualService.engine();
+            visualRepository.replace(asset.id(), run.jobId, visuals);
+            run.emit(JobStage.OCR, JobEvent.TYPE_LOG, "info", JobStage.OCR.floor(),
+                    "复用任务 %d 的画面文字（%d 条），跳过抽帧与识别"
+                            .formatted(reused.sourceJobId(), visuals.size()));
+        } else if (info.hasVideo() && asset.kind() == MediaKind.VIDEO) {
             run.stage(JobStage.FRAMES, "抽取关键帧");
             List<FrameExtractor.Frame> frames = frameExtractor.extract(source, storage.frameDir(asset.id(), run.jobId), run.durationMs);
             run.emit(JobStage.FRAMES, JobEvent.TYPE_METRIC, "info", JobStage.FRAMES.floor(),
@@ -229,11 +252,20 @@ public class AnalysisPipeline {
         // ---- 分块与索引
         run.stage(JobStage.SEGMENT, "对齐时间轴");
         run.stage(JobStage.CHUNK, "构建上下文分块");
-        List<ContextChunk> chunks = ChunkBuilder.build(transcripts, visuals, run.durationMs, agentProps);
-        chunks = chunkEnricher.enrich(chunks, run.progress(JobStage.CHUNK));
-        chunkRepository.replace(asset.id(), run.jobId, chunks, aiProps.getEmbeddingModel());
-        run.emit(JobStage.CHUNK, JobEvent.TYPE_METRIC, "info", JobStage.CHUNK.floor(),
-                "生成 %d 个上下文分块".formatted(chunks.size()));
+        List<ContextChunk> chunks;
+        if (reused.hasChunks() && !reused.segments().isEmpty() && !reused.visuals().isEmpty()) {
+            // 分块依赖的只是转写与画面文字，两者都没变时分块也不会变；复用可顺带省掉摘要与向量化的模型调用
+            chunks = reused.chunks();
+            chunkRepository.replace(asset.id(), run.jobId, chunks, aiProps.getEmbeddingModel());
+            run.emit(JobStage.CHUNK, JobEvent.TYPE_LOG, "info", JobStage.CHUNK.floor(),
+                    "复用任务 %d 的 %d 个上下文分块".formatted(reused.sourceJobId(), chunks.size()));
+        } else {
+            chunks = ChunkBuilder.build(transcripts, visuals, run.durationMs, agentProps);
+            chunks = chunkEnricher.enrich(chunks, run.progress(JobStage.CHUNK));
+            chunkRepository.replace(asset.id(), run.jobId, chunks, aiProps.getEmbeddingModel());
+            run.emit(JobStage.CHUNK, JobEvent.TYPE_METRIC, "info", JobStage.CHUNK.floor(),
+                    "生成 %d 个上下文分块".formatted(chunks.size()));
+        }
 
         // ---- Agent
         run.stage(JobStage.RETRIEVE, "检索相关证据");
@@ -253,7 +285,9 @@ public class AnalysisPipeline {
         boolean verified = outcome.critique().passed();
         String markdown = ReportComposer.markdown(
                 new ReportComposer.Meta(job.focus(), outcome.mode(), Times.human(run.durationMs),
-                        describeEngine(asrEngine, visuals.size()), outcome.modeReason(), outcome.rounds(), verified),
+                        describeEngine(asrEngine, visuals.size()),
+                        Texts.isBlank(job.modeReason()) ? outcome.modeReason() : job.modeReason(),
+                        outcome.rounds(), verified),
                 draft, outcome.critique(), citations);
 
         Path docx = storage.reportDocx(asset.id(), run.jobId);
@@ -273,6 +307,12 @@ public class AnalysisPipeline {
         trace.put("rounds", outcome.rounds());
         trace.put("verified", verified);
         trace.put("mode", outcome.mode().name());
+        if (!Texts.isBlank(job.modeSource())) {
+            trace.put("modeSource", job.modeSource());
+        }
+        if (reused.present()) {
+            trace.put("reusedFrom", reused.sourceJobId());
+        }
         trace.put("tasks", outcome.plan().tasks());
         trace.put("understoodGoal", outcome.plan().understoodGoal());
         trace.put("transcriptSegments", transcripts.size());
