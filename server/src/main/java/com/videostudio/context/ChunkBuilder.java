@@ -77,14 +77,17 @@ public final class ChunkBuilder {
         StringBuilder sb = new StringBuilder();
         Set<String> seen = new LinkedHashSet<>();
         for (VisualEvidence v : visuals) {
-            if (Texts.isBlank(v.ocrText())) {
+            // 优先用 OCR 文字；没有文字时退回视觉描述，让「纯画面」也能参与分块与检索
+            boolean fromCaption = Texts.isBlank(v.ocrText());
+            String text = fromCaption ? v.caption() : v.ocrText();
+            if (Texts.isBlank(text)) {
                 continue;
             }
-            String normalized = Texts.oneLine(v.ocrText(), 400);
+            String normalized = Texts.oneLine(text, 400);
             if (!seen.add(normalized)) {
                 continue;
             }
-            sb.append(v.bracket()).append(' ').append(normalized).append('\n');
+            sb.append(v.bracket()).append(' ').append(fromCaption ? "画面描述：" : "").append(normalized).append('\n');
             if (sb.length() > 6_000) {
                 sb.append("…（本段其余画面文字已裁剪）\n");
                 break;

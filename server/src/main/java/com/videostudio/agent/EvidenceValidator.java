@@ -44,8 +44,8 @@ public final class EvidenceValidator {
         List<AgentModels.Evidence> supported = new ArrayList<>();
         for (AgentModels.Evidence evidence : draft.evidence()) {
             String source = evidence.source() == null ? "" : evidence.source().toUpperCase(Locale.ROOT);
-            if (!source.contains("ASR") && !source.contains("OCR")) {
-                problems.add("证据来源不合法（只能是 ASR / OCR）：" + source);
+            if (!source.contains("ASR") && !source.contains("OCR") && !source.contains("VISION")) {
+                problems.add("证据来源不合法（只能是 ASR / OCR / VISION）：" + source);
                 add(failingTimestamps, evidence.timestampMs());
                 continue;
             }
@@ -60,7 +60,10 @@ public final class EvidenceValidator {
                     && normalize(segment.text()).contains(normalize(evidence.content()));
             boolean ocrOk = visual != null && source.contains("OCR")
                     && normalize(visual.ocrText()).contains(normalize(evidence.content()));
-            if (!asrOk && !ocrOk) {
+            // 视觉描述同样要逐字核对：模型写的描述也是原始证据，不能凭印象引用
+            boolean visionOk = visual != null && source.contains("VISION")
+                    && normalize(visual.caption()).contains(normalize(evidence.content()));
+            if (!asrOk && !ocrOk && !visionOk) {
                 problems.add("证据原文无法在原始片段中核验: ts=%d (%s)"
                         .formatted(evidence.timestampMs(), Times.format(evidence.timestampMs())));
                 add(failingTimestamps, evidence.timestampMs());

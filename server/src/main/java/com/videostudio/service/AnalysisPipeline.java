@@ -240,8 +240,10 @@ public class AnalysisPipeline {
                     visualEngine = visualService.engine();
                 }
                 visualRepository.replace(asset.id(), run.jobId, visuals);
-                run.emit(JobStage.OCR, JobEvent.TYPE_METRIC, "info", JobStage.OCR.floor(),
-                        "画面文字 %d 条（去重丢弃 %d 帧）".formatted(visuals.size(), ocr.dropped()));
+                String ocrNote = ocr.captioned() > 0
+                        ? "画面证据 %d 条（其中 %d 条为视觉描述，去重丢弃 %d 帧）".formatted(visuals.size(), ocr.captioned(), ocr.dropped())
+                        : "画面文字 %d 条（去重丢弃 %d 帧）".formatted(visuals.size(), ocr.dropped());
+                run.emit(JobStage.OCR, JobEvent.TYPE_METRIC, "info", JobStage.OCR.floor(), ocrNote);
             }
         }
 
@@ -285,7 +287,7 @@ public class AnalysisPipeline {
         boolean verified = outcome.critique().passed();
         String markdown = ReportComposer.markdown(
                 new ReportComposer.Meta(job.focus(), outcome.mode(), Times.human(run.durationMs),
-                        describeEngine(asrEngine, visuals.size()),
+                        describeEngine(asrEngine, visuals.size(), captionCount(visuals)),
                         Texts.isBlank(job.modeReason()) ? outcome.modeReason() : job.modeReason(),
                         outcome.rounds(), verified),
                 draft, outcome.critique(), citations);
@@ -317,6 +319,10 @@ public class AnalysisPipeline {
         trace.put("understoodGoal", outcome.plan().understoodGoal());
         trace.put("transcriptSegments", transcripts.size());
         trace.put("visualEvidence", visuals.size());
+        int captionedCount = captionCount(visuals);
+        if (captionedCount > 0) {
+            trace.put("captionedFrames", captionedCount);
+        }
         trace.put("chunks", chunks.size());
         trace.put("warnings", run.warnings);
         trace.put("llmEnabled", aiProps.cloudEnabled());
@@ -329,15 +335,27 @@ public class AnalysisPipeline {
                 "报告已生成（%d 字）".formatted(markdown.length()));
     }
 
-    private String describeEngine(String asrEngine, int visualCount) {
+    private String describeEngine(String asrEngine, int visualCount, int captionedCount) {
         String asr = switch (asrEngine) {
             case "cloud-asr" -> "云端语音识别";
             case "whisper" -> "本地 whisper.cpp";
             case "none" -> "无语音";
             default -> asrEngine;
         };
-        String ocr = visualCount > 0 ? "本地 OCR" : "无画面文字";
+        String ocr = visualCount <= 0 ? "无画面文字"
+                : captionedCount > 0 ? "本地 OCR + 视觉描述 %d 帧".formatted(captionedCount)
+                : "本地 OCR";
         String llm = aiProps.cloudEnabled() ? "大模型 " + aiProps.getModel() : "离线模板";
         return "%s + %s + %s".formatted(asr, ocr, llm);
+    }
+
+    private static int captionCount(List<VisualEvidence> visuals) {
+        int count = 0;
+        for (VisualEvidence visual : visuals) {
+            if (visual.captionOnly()) {
+                count++;
+            }
+        }
+        return count;
     }
 }

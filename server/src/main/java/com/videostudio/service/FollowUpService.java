@@ -153,10 +153,10 @@ public class FollowUpService {
                 .toList();
         List<VisualEvidence> rankedVisual = visuals.stream()
                 .sorted((a, b) -> Double.compare(
-                        Texts.termScore(tokens, b.ocrText()),
-                        Texts.termScore(tokens, a.ocrText())))
+                        Texts.termScore(tokens, b.displayText()),
+                        Texts.termScore(tokens, a.displayText())))
                 .limit(2)
-                .filter(v -> Texts.termScore(tokens, v.ocrText()) > 0)
+                .filter(v -> Texts.termScore(tokens, v.displayText()) > 0)
                 .toList();
 
         StringBuilder sb = new StringBuilder();
@@ -170,8 +170,8 @@ public class FollowUpService {
                     .append(Texts.truncate(s.text(), 220)).append('\n');
         }
         for (VisualEvidence v : rankedVisual) {
-            sb.append("- ").append(v.bracket()).append(" 画面文字：")
-                    .append(Texts.truncate(v.ocrText(), 160)).append('\n');
+            sb.append("- ").append(v.bracket()).append(v.captionOnly() ? " 画面描述：" : " 画面文字：")
+                    .append(Texts.truncate(v.displayText(), 160)).append('\n');
         }
         return sb.toString().strip();
     }

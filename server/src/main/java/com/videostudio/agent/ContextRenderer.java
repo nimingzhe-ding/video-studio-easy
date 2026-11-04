@@ -93,14 +93,16 @@ public final class ContextRenderer {
         }
 
         if (!retrieved.visuals().isEmpty()) {
-            sb.append("\n== 画面文字（OCR）==\n");
+            sb.append("\n== 画面文字（OCR）与画面描述（VISION）==\n");
             int skippedVisuals = 0;
             for (VisualEvidence visual : retrieved.visuals()) {
-                if (Texts.isBlank(visual.ocrText())) {
+                boolean fromCaption = Texts.isBlank(visual.ocrText());
+                String text = fromCaption ? visual.caption() : visual.ocrText();
+                if (Texts.isBlank(text)) {
                     continue;
                 }
-                String block = "- %s OCR: %s%n".formatted(visual.bracket(),
-                        Texts.oneLine(visual.ocrText(), 300));
+                String block = "- %s %s: %s%n".formatted(visual.bracket(), fromCaption ? "VISION" : "OCR",
+                        Texts.oneLine(text, 300));
                 if (sb.length() + block.length() > budget) {
                     skippedVisuals++;
                     continue;

@@ -21,6 +21,14 @@ public class AiProperties {
     private int timeoutSeconds = 180;
     private int maxRetries = 3;
     private boolean dryRun = false;
+    /**
+     * 是否允许对关键帧调用视觉模型写描述。
+     * <p>默认关闭：视觉模型按帧计费，长视频几百帧全量调用成本不可控，
+     * 参考项目也明确「只对低置信度或强视觉任务定向调用」。打开后也只补 OCR 文字极少的帧。
+     */
+    private boolean visionCaptionEnabled = false;
+    /** 单个任务最多为多少帧生成视觉描述 */
+    private int visionCaptionMaxFrames = 24;
 
     /** 是否具备真实调用能力 */
     public boolean cloudEnabled() {
@@ -29,6 +37,15 @@ public class AiProperties {
 
     public boolean visionEnabled() {
         return cloudEnabled();
+    }
+
+    /** 视觉描述是否可用：既要模型可达，也要用户显式打开开关 */
+    public boolean visionCaptionEnabled() {
+        return visionEnabled() && visionCaptionEnabled;
+    }
+
+    public int visionCaptionMaxFrames() {
+        return Math.max(0, Math.min(visionCaptionMaxFrames, 200));
     }
 
     public boolean embeddingEnabled() {
@@ -158,5 +175,21 @@ public class AiProperties {
 
     public void setDryRun(boolean dryRun) {
         this.dryRun = dryRun;
+    }
+
+    public boolean isVisionCaptionEnabled() {
+        return visionCaptionEnabled;
+    }
+
+    public void setVisionCaptionEnabled(boolean visionCaptionEnabled) {
+        this.visionCaptionEnabled = visionCaptionEnabled;
+    }
+
+    public int getVisionCaptionMaxFrames() {
+        return visionCaptionMaxFrames;
+    }
+
+    public void setVisionCaptionMaxFrames(int visionCaptionMaxFrames) {
+        this.visionCaptionMaxFrames = visionCaptionMaxFrames;
     }
 }

@@ -260,7 +260,7 @@ public class AnalysisAgent {
         List<String> items = new ArrayList<>();
         List<String> screenTexts = new ArrayList<>();
         for (VisualEvidence visual : visuals) {
-            for (String line : Texts.normalizeWhitespace(visual.ocrText()).split("\n")) {
+            for (String line : Texts.normalizeWhitespace(visual.displayText()).split("\n")) {
                 if (!line.isBlank()) {
                     screenTexts.add(Times.format(visual.timeMs()) + " " + Texts.oneLine(line, 60));
                 }
