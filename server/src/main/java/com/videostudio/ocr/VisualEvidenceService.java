@@ -46,6 +46,11 @@ public class VisualEvidenceService {
     public record Outcome(List<VisualEvidence> items, int scanned, int dropped) {
     }
 
+    /** 当前使用的画面文字识别引擎标识，供报告元信息展示。 */
+    public String engine() {
+        return recognizer.engine();
+    }
+
     public Outcome extract(List<FrameExtractor.Frame> frames, Consumer<String> progress) {
         List<VisualEvidence> items = new ArrayList<>();
         FrameDeduper.Fingerprint previous = null;

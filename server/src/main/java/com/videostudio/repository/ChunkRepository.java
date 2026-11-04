@@ -76,4 +76,9 @@ public class ChunkRepository {
             return List.of();
         }
     }
+
+    public void deleteByJob(long jobId) {
+        jdbc.update("DELETE FROM context_chunk WHERE job_id = ?", jobId);
+    }
+
 }

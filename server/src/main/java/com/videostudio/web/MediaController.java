@@ -6,6 +6,7 @@ import com.videostudio.domain.MediaAsset;
 import com.videostudio.media.MediaIngestService;
 import com.videostudio.repository.JobRepository;
 import com.videostudio.repository.MediaRepository;
+import com.videostudio.service.CleanupService;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -25,12 +26,14 @@ public class MediaController {
     private final MediaIngestService ingestService;
     private final MediaRepository mediaRepository;
     private final JobRepository jobRepository;
+    private final CleanupService cleanupService;
 
     public MediaController(MediaIngestService ingestService, MediaRepository mediaRepository,
-                           JobRepository jobRepository) {
+                           JobRepository jobRepository, CleanupService cleanupService) {
         this.ingestService = ingestService;
         this.mediaRepository = mediaRepository;
         this.jobRepository = jobRepository;
+        this.cleanupService = cleanupService;
     }
 
     @PostMapping
@@ -54,9 +57,10 @@ public class MediaController {
         return ApiResponse.success(jobRepository.listByAsset(id));
     }
 
+    /** 删除媒体：连带其任务、证据、报告与磁盘目录，避免留下孤儿数据 */
     @DeleteMapping("/{id}")
     public ApiResponse<Void> delete(@PathVariable long id) {
-        mediaRepository.delete(id);
+        cleanupService.deleteMedia(id);
         return ApiResponse.success();
     }
 }

@@ -44,4 +44,9 @@ public class VisualRepository {
     public List<VisualEvidence> listByJob(long jobId) {
         return jdbc.query("SELECT * FROM visual_evidence WHERE job_id = ? ORDER BY time_ms ASC", ROW, jobId);
     }
+
+    public void deleteByJob(long jobId) {
+        jdbc.update("DELETE FROM visual_evidence WHERE job_id = ?", jobId);
+    }
+
 }

@@ -111,4 +111,13 @@ public class JobRepository {
                 WHERE status IN ('PENDING','RUNNING')
                 """, JobStatus.FAILED.name(), JobStage.FAILED.name(), reason, Sql.now(), Sql.now());
     }
+
+    public void delete(long id) {
+        jdbc.update("DELETE FROM analysis_job WHERE id = ?", id);
+    }
+
+    public List<Long> idsByAsset(long assetId) {
+        return jdbc.queryForList("SELECT id FROM analysis_job WHERE asset_id = ?", Long.class, assetId);
+    }
+
 }

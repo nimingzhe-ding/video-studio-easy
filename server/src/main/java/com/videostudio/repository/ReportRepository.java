@@ -52,4 +52,9 @@ public class ReportRepository {
     public void updateDocxPath(long jobId, String path) {
         jdbc.update("UPDATE analysis_report SET docx_path = ? WHERE job_id = ?", path, jobId);
     }
+
+    public void deleteByJob(long jobId) {
+        jdbc.update("DELETE FROM analysis_report WHERE job_id = ?", jobId);
+    }
+
 }

@@ -4,12 +4,14 @@ import com.videostudio.common.ApiException;
 import com.videostudio.common.ApiResponse;
 import com.videostudio.domain.AnalysisJob;
 import com.videostudio.domain.AnalysisMode;
+import com.videostudio.service.CleanupService;
 import com.videostudio.service.JobService;
 import com.videostudio.repository.JobEventRepository;
 import com.videostudio.repository.JobRepository;
 import com.videostudio.repository.ReportRepository;
 import com.videostudio.repository.TranscriptRepository;
 import com.videostudio.repository.VisualRepository;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -33,10 +35,12 @@ public class JobController {
     private final ReportRepository reportRepository;
     private final TranscriptRepository transcriptRepository;
     private final VisualRepository visualRepository;
+    private final CleanupService cleanupService;
 
     public JobController(JobService jobService, JobRepository jobRepository, JobEventRepository eventRepository,
                          ReportRepository reportRepository, TranscriptRepository transcriptRepository,
-                         VisualRepository visualRepository) {
+                         VisualRepository visualRepository, CleanupService cleanupService) {
+        this.cleanupService = cleanupService;
         this.jobService = jobService;
         this.jobRepository = jobRepository;
         this.eventRepository = eventRepository;
@@ -111,5 +115,12 @@ public class JobController {
         String goal = body == null ? null : body.goal();
         AnalysisMode mode = body == null || body.mode() == null ? null : AnalysisMode.of(body.mode());
         return ApiResponse.success(jobService.reanalyze(id, goal, mode));
+    }
+
+    /** 删除任务：运行中的先取消，再清证据、事件、报告与任务目录 */
+    @DeleteMapping("/{id}")
+    public ApiResponse<Void> delete(@PathVariable long id) {
+        cleanupService.deleteJob(id);
+        return ApiResponse.success();
     }
 }

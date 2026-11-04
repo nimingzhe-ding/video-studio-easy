@@ -45,4 +45,9 @@ public class TranscriptRepository {
     public List<TranscriptSegment> listByJob(long jobId) {
         return jdbc.query("SELECT * FROM transcript_segment WHERE job_id = ? ORDER BY start_ms ASC", ROW, jobId);
     }
+
+    public void deleteByJob(long jobId) {
+        jdbc.update("DELETE FROM transcript_segment WHERE job_id = ?", jobId);
+    }
+
 }

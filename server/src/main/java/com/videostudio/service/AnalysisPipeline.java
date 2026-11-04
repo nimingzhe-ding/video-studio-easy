@@ -203,6 +203,7 @@ public class AnalysisPipeline {
 
         // ---- 画面：关键帧 → OCR
         List<VisualEvidence> visuals = List.of();
+        String visualEngine = null;
         if (info.hasVideo() && asset.kind() == MediaKind.VIDEO) {
             run.stage(JobStage.FRAMES, "抽取关键帧");
             List<FrameExtractor.Frame> frames = frameExtractor.extract(source, storage.frameDir(asset.id(), run.jobId), run.durationMs);
@@ -212,6 +213,9 @@ public class AnalysisPipeline {
                 run.stage(JobStage.OCR, "识别画面文字");
                 VisualEvidenceService.Outcome ocr = visualService.extract(frames, run.progress(JobStage.OCR));
                 visuals = ocr.items();
+                if (!visuals.isEmpty()) {
+                    visualEngine = visualService.engine();
+                }
                 visualRepository.replace(asset.id(), run.jobId, visuals);
                 run.emit(JobStage.OCR, JobEvent.TYPE_METRIC, "info", JobStage.OCR.floor(),
                         "画面文字 %d 条（去重丢弃 %d 帧）".formatted(visuals.size(), ocr.dropped()));
@@ -263,6 +267,9 @@ public class AnalysisPipeline {
         Map<String, Object> trace = new LinkedHashMap<>();
         trace.put("engine", outcome.engine());
         trace.put("asrEngine", asrEngine);
+        if (visualEngine != null) {
+            trace.put("visualEngine", visualEngine);
+        }
         trace.put("rounds", outcome.rounds());
         trace.put("verified", verified);
         trace.put("mode", outcome.mode().name());
