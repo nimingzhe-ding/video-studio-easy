@@ -305,6 +305,36 @@ if (previousEnd >= 0 && start < previousEnd + GAP_MS) {      // GAP_MS = 20
   但换成两行后部分播放器只显示第一行。
 - 时间轴格式写死在下游播放器的容错边界内：SRT `HH:MM:SS,mmm`、VTT `HH:MM:SS.mmm` 且首行必须是 `WEBVTT`。
 
+### 3.9 定向视觉描述（caption）
+
+`llm/FrameCaptioner.java` 是唯一调用视觉模型的地方，由 `config/AiProperties.visionCaptionEnabled()` 控制：
+**默认关闭，只对 OCR 一个字都没读到的帧触发，且有帧数配额**。
+
+三个约束，每个都对应一次实际的取舍：
+
+1. **为什么默认关**。视觉模型按帧计费，一小时课程抽出的帧数是几百量级，全量调用成本不可控。
+   参考项目 DOVideo-AI 在访谈文档里的立场是「对低置信度或强视觉任务定向调用，而不是所有关键帧全量调用」，
+   这里直接照做。
+2. **为什么只挑空帧**。课件、录屏、会议共享的绝大多数帧文字都能被本地 OCR 拿到，模型再描述一遍是纯浪费。
+   空帧原先是被直接丢弃的（纯人像、纯风景没有任何可引用内容），有了描述之后才第一次有机会进入证据链。
+3. **为什么要能通过校验**。描述被当作 `VISION` 来源的原始证据，`EvidenceValidator` 会逐字核对
+   `normalize(caption).contains(normalize(content))`。否则模型完全可以在第二轮把一句自己编的画面描述
+   当成证据引用，校验环节就成了摆设。
+
+实现上有两个容易写错的位置：
+
+```java
+// 1. 判重必须「文字优先、描述兜底」，否则两帧不同画面但描述相同的过渡页会各留一条重复证据
+String key = captionOnly ? Texts.normalizeWhitespace(caption) : normalized;
+
+// 2. 描述要放在文本判重之前算，而不是在丢弃空帧之后
+Map<Path, String> captions = captionBlankFrames(scannedFrames, progress);
+```
+
+配额按**时间顺序**取前 N 个空帧而不是随机取，保证同一素材重跑时描述的帧一致、可复现。
+描述结果写进 `visual_evidence.caption`，同时进入 `ChunkBuilder.joinOcr`（前缀标 `画面描述：`）
+与 `ContextRenderer` 的 `== 画面文字（OCR）与画面描述（VISION）==` 小节，因此能参与检索与 embedding。
+
 ## 4. 数据模型
 
 | 表 | 作用 | 关键字段 |
@@ -313,7 +343,7 @@ if (previousEnd >= 0 && start < previousEnd + GAP_MS) {      // GAP_MS = 20
 | `analysis_job` | 分析任务 | `mode`、`status`、`stage`、`progress`、`notices`、`degraded` |
 | `job_event` | 事件流水 | `seq`、`stage`、`type`、`progress`、`message` |
 | `transcript_segment` | 语音证据 | `start_ms`、`end_ms`、`text`、`source` |
-| `visual_evidence` | 画面证据 | `time_ms`、`ocr_text`、`frame_path`、`hash` |
+| `visual_evidence` | 画面证据 | `time_ms`、`ocr_text`、`caption`、`frame_path`、`hash` |
 | `context_chunk` | 上下文分块 | `summary`、`keywords`、`visual_keywords`、`embedding` |
 | `analysis_report` | 报告 | `markdown`、`docx_path`、`trace_json` |
 | `chat_message` | 追问历史 | `role`、`content`、`citations_json` |

@@ -50,11 +50,15 @@
 
 > `conclusions` 中的每条结论都必须至少绑定一条真实证据。
 > `evidence.claim` 必须原样复制它所支持的 `conclusion`，
-> `timestampMs` 必须落在原始片段内，`source` 只能是 ASR、OCR 或 ASR+OCR。
+> `timestampMs` 必须落在原始片段内，`source` 只能是 ASR、OCR、VISION 或它们的组合（ASR+OCR、OCR+VISION）。
 
 「原样复制 claim」不是为了好看，而是为了让**机器可校验**：
 `EvidenceValidator` 会把 `claim` 和 `conclusion` 一起做 `normalize`（小写 + 去标点空白）后比较，
 不相等就判定这条结论没有证据支撑。这比让模型自己说「我核对过了」可靠得多。
+
+`VISION` 是后来放开的一类来源：视觉模型对「没有文字的画面」写的描述同样是原始证据，
+所以它和 OCR 走同一条逐字核对路径——`normalize(caption)` 必须包含 `normalize(evidence.content)`。
+放开来源不等于放宽校验，只是把校验对象从屏幕文字扩展到了描述文本。
 
 ## 6. Critic 与校验器的分工
 

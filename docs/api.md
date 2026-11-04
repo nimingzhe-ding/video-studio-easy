@@ -236,7 +236,18 @@ data: {"status":"SUCCEEDED","progress":100,"error":""}
 
 ### `GET /api/jobs/{id}/evidence`
 
-画面文字证据列表（`timeMs`、`ocrText`、`framePath`、`hash`、`source`）。
+画面证据列表（`timeMs`、`ocrText`、`caption`、`framePath`、`hash`、`source`）。
+
+| 字段 | 说明 |
+| --- | --- |
+| `ocrText` | 本地 OCR 读到的屏幕文字；这一帧没有文字时为空串 |
+| `caption` | 视觉模型写的一句画面描述；只在开启 `VISION_CAPTION_ENABLED` 且该帧没有文字时才有值 |
+| `source` | 识别引擎，如 `vision-ocr`；描述帧的 `ocrText` 为空、`caption` 有值 |
+
+两条约束：
+
+- 只有「既没有文字也没有描述」的帧会被丢弃——纯人像画面不会以空文本进入检索
+- 判重对文字与描述一视同仁：同一屏重复出现时只留第一次出现的时刻
 
 ### `POST /api/jobs/{id}/cancel`
 
@@ -343,17 +354,26 @@ Content-Disposition: attachment; filename*=UTF-8''video-studio-15.srt
 
 ### `GET /api/jobs/runtime`
 
+返回结构与其余接口一致（`{ok, data, message}`），`data` 为：
+
 ```json
 {
   "aiEnabled": false,
   "realtimeEnabled": false,
   "model": "qwen-plus",
   "embeddingModel": "text-embedding-v3",
+  "visionModel": "qwen-vl-max",
+  "visionCaptionEnabled": false,
   "status": 5
 }
 ```
 
-前端用来提示「当前未配置大模型」。
+前端用来提示「当前未配置大模型」。`visionCaptionEnabled` 同时受 `cloudEnabled()` 与
+`VISION_CAPTION_ENABLED` 约束——没有 key 时即使打开开关也不会真的调模型。
+
+> 该接口曾经有两个坑：把配置类写成方法参数（Spring MVC 会按请求参数重新绑定，永远读不到真实配置），
+> 以及返回裸 `Map` 没有包 `ApiResponse`（前端统一取 `payload.data`，拿到的永远是 `undefined`）。
+> 现在配置走构造器注入、响应统一包一层。
 
 ---
 
