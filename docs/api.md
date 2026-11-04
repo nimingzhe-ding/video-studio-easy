@@ -273,6 +273,44 @@ data: {"status":"SUCCEEDED","progress":100,"error":""}
 
 文件不存在返回 404「报告文件不存在，请重新生成」。
 
+### `GET /api/jobs/{id}/report/subtitle?format=srt`
+
+把该任务的转写导出成字幕文件，`format` 可选 `srt`（默认）/ `vtt` / `txt`。
+
+| format | Content-Type | 说明 |
+| --- | --- | --- |
+| `srt` | `application/x-subrip;charset=UTF-8` | 序号从 1 开始，时间轴用逗号毫秒 `00:00:01,200` |
+| `vtt` | `text/vtt;charset=UTF-8` | 首行 `WEBVTT`，时间轴用句点毫秒 `00:00:01.200` |
+| `txt` / `text` | `text/plain;charset=UTF-8` | 每段一行，`[mm:ss] 讲者：正文` |
+
+```
+Content-Disposition: attachment; filename*=UTF-8''video-studio-15.srt
+```
+
+```srt
+1
+00:00:00,000 --> 00:00:03,400
+大家好，欢迎来到 video-studio-easy。
+
+2
+00:00:30,160 --> 00:00:53,360
+按场景切换抽取画面……
+```
+
+导出时的两条硬约束（`report/SubtitleWriter.java`）：
+
+- 空文本与零长度片段丢弃，否则播放器会出现空白字幕；
+- 相邻片段至少留 20 ms 空隙（前一条 `end + 20ms` 与后一条 `start` 取较大者），
+  重叠时间轴会被部分渲染引擎判为冲突而闪一下消失。
+
+错误：
+
+| 情况 | 状态码 | message |
+| --- | --- | --- |
+| 任务不存在 | 404 | `任务不存在: {id}` |
+| 该任务没有转写 | 404 | `该任务还没有可导出的转写内容` |
+| 不支持的格式 | 400 | `不支持的字幕格式: ass（可选 srt / vtt / txt）` |
+
 ---
 
 ## 4. 追问

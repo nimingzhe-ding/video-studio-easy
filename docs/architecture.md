@@ -284,6 +284,27 @@ findReusable(assetId, selfJobId)
   - 终止时发 `done`（含 `status` / `progress` / `error`）并 complete
 - 前端：`EventSource` 监听 `event` / `done`，断线 3 秒重连
 
+### 3.8 字幕导出
+
+`report/SubtitleWriter.java` 是纯函数工具类，不依赖 Spring，三种格式共用同一套「可用片段」过滤：
+
+```java
+long start = Math.max(0, segment.startMs());
+long end = Math.max(start + 200, segment.endMs());          // 零长度补足 200ms
+if (previousEnd >= 0 && start < previousEnd + GAP_MS) {      // GAP_MS = 20
+    start = previousEnd + GAP_MS;                            // 重叠前推，不裁掉内容
+    end = Math.max(start + 200, end);
+}
+```
+
+- **为什么要留 20ms 空隙**：whisper 相邻片段经常首尾相接（前一段 `end=53360`、后一段 `start=53360`），
+  部分播放器会把零间隔判定为重叠冲突，表现为后一条闪现即消失。前推起点而不是缩短结束时间，是因为
+  字幕宁可晚 20ms 也不能丢字。
+- **为什么丢掉空片段**：静音片、纯音乐片转写常返回空串，写进 SRT 就是一条只有时间轴的空白字幕。
+- **正文必须压成一行**：`Texts.normalizeWhitespace(...).replace("\n", " ")`——SRT 允许换行，
+  但换成两行后部分播放器只显示第一行。
+- 时间轴格式写死在下游播放器的容错边界内：SRT `HH:MM:SS,mmm`、VTT `HH:MM:SS.mmm` 且首行必须是 `WEBVTT`。
+
 ## 4. 数据模型
 
 | 表 | 作用 | 关键字段 |
@@ -349,4 +370,4 @@ findReusable(assetId, selfJobId)
 - 视觉模型描述关键帧（当前只识别屏幕文字）
 - 说话人分离（`speaker` 字段已预留）
 - 真正的增量 embedding 与向量库（当前是内存内暴力检索）
-- 多任务共享同一份「证据提取」结果，避免重复抽帧/转写
+- 多任务共享同一份「证据提取」结果，避免重复抽帧/转写（已部分完成：见 3.6）

@@ -44,7 +44,7 @@ Word 报告，并支持围绕报告继续追问。
 | 自动模式判定 | 目标留空或选「自动判断」时，后端用模型（无 key 时用关键词规则）把自然语言目标归到四种模式之一，并记录判定来源与理由 |
 | 证据复用 | 同一素材的第二个任务直接复用已提取的转写、画面文字与分块，只重新检索与分析，省掉最贵的两步 |
 | 多轮补证 | 校验不通过时按 Critic 点名的时间戳回捞片段、按缺口重新检索，扩的是证据而不是重写措辞 |
-| 文档导出 | Markdown 直接展示，Word（.docx）一键下载 |
+| 文档导出 | Markdown 直接展示，Word（.docx）一键下载；转写可导出 SRT / VTT / TXT 字幕 |
 | 追问 | 基于报告 + 检索到的证据继续对话，回答同样带时间戳 |
 | 实时对话 | 浏览器麦克风/摄像头直通云端 realtime 模型（WebSocket 中转，避免把 key 暴露给前端） |
 | 无 key 可跑 | 未配置大模型时自动降级为确定性模板，转写、OCR、检索、报告、导出全部照常工作 |
@@ -302,6 +302,7 @@ export LLM_MODEL=qwen-plus
 | `GET` | `/api/jobs/{id}/report` | 报告 JSON |
 | `GET` | `/api/jobs/{id}/report/markdown` | 报告 Markdown |
 | `GET` | `/api/jobs/{id}/report/docx` | 报告 Word 下载 |
+| `GET` | `/api/jobs/{id}/report/subtitle?format=srt` | 字幕导出（`srt` / `vtt` / `txt`） |
 | `POST` | `/api/jobs/{id}/cancel` | 取消任务 |
 | `POST` | `/api/jobs/{id}/reanalyze` | 复用证据重新分析 `{goal, mode}` |
 | `DELETE` | `/api/jobs/{id}` | 删除任务及其证据与文件 |
@@ -422,4 +423,7 @@ curl -N http://127.0.0.1:9090/api/jobs/1/stream
 # 4. 取报告
 curl -s http://127.0.0.1:9090/api/jobs/1/report/markdown
 curl -o report.docx http://127.0.0.1:9090/api/jobs/1/report/docx
+
+# 5. 导出字幕（srt / vtt / txt）
+curl -o subtitle.srt "http://127.0.0.1:9090/api/jobs/1/report/subtitle?format=srt"
 ```
