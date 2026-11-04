@@ -1,21 +1,126 @@
+/** 展示用的格式化工具：时长、体积、时间与相对时间 */
+
 export function formatDuration(ms) {
-  if (!ms || ms <= 0) return '--:--'
-  const total = Math.round(ms / 1000)
-  const h = Math.floor(total / 3600)
-  const m = Math.floor((total % 3600) / 60)
-  const s = total % 60
-  const pad = (n) => String(n).padStart(2, '0')
-  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`
+  // 0 是合法时间点（视频开头），只有缺失值才显示占位
+  if (ms === null || ms === undefined || Number.isNaN(Number(ms)) || ms < 0) {
+    return '--:--';
+  }
+  const total = Math.round(ms / 1000);
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = total % 60;
+  const pad = (value) => String(value).padStart(2, '0');
+  return hours > 0 ? `${hours}:${pad(minutes)}:${pad(seconds)}` : `${pad(minutes)}:${pad(seconds)}`;
 }
 
 export function formatSize(bytes) {
-  if (!bytes) return '0 B'
-  const units = ['B', 'KB', 'MB', 'GB']
-  let value = bytes
-  let index = 0
-  while (value >= 1024 && index < units.length - 1) {
-    value /= 1024
-    index += 1
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  if (!bytes || bytes < 0) {
+    return '0 B';
   }
-  return `${value.toFixed(index === 0 ? 0 : 1)} ${units[index]}`
+  let index = 0;
+  let value = bytes;
+  while (value >= 1024 && index < units.length - 1) {
+    value /= 1024;
+    index += 1;
+  }
+  return `${index === 0 ? Math.round(value) : value.toFixed(1)} ${units[index]}`;
+}
+
+/** 毫秒 → 00:00 的短格式，用于列表与徽章 */
+export function formatClock(ms) {
+  return formatDuration(ms);
+}
+
+export function formatDateTime(iso) {
+  if (!iso) {
+    return '';
+  }
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) {
+    return '';
+  }
+  const pad = (value) => String(value).padStart(2, '0');
+  return `${date.getMonth() + 1}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+/** 相对时间：「刚刚 / 12 分钟前 / 3 小时前 / 2 天前」 */
+export function formatRelative(iso) {
+  if (!iso) {
+    return '';
+  }
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) {
+    return '';
+  }
+  const diff = Date.now() - date.getTime();
+  if (diff < 60_000) {
+    return '刚刚';
+  }
+  if (diff < 3_600_000) {
+    return `${Math.floor(diff / 60_000)} 分钟前`;
+  }
+  if (diff < 86_400_000) {
+    return `${Math.floor(diff / 3_600_000)} 小时前`;
+  }
+  if (diff < 7 * 86_400_000) {
+    return `${Math.floor(diff / 86_400_000)} 天前`;
+  }
+  return formatDateTime(iso);
+}
+
+export const MODE_LABELS = {
+  GENERAL: '通用理解',
+  LEARNING: '学习笔记',
+  REVIEW: '评审纪要',
+  CREATION: '创作素材'
+};
+
+export const STATUS_LABELS = {
+  PENDING: '排队中',
+  RUNNING: '分析中',
+  SUCCEEDED: '已完成',
+  FAILED: '失败',
+  CANCELED: '已取消'
+};
+
+export const STAGE_LABELS = {
+  QUEUED: '排队',
+  PROBE: '解析媒体',
+  AUDIO: '抽取音轨',
+  TRANSCRIBE: '语音识别',
+  FRAMES: '关键帧抽取',
+  OCR: '画面文字识别',
+  SEGMENT: '时间轴对齐',
+  CHUNK: '分块与索引',
+  RETRIEVE: '检索证据',
+  PLAN: '规划提纲',
+  EXECUTE: '撰写正文',
+  CRITIC: '证据校验',
+  REPORT: '生成文档',
+  DONE: '完成',
+  FAILED: '失败'
+};
+
+/** 报告 trace 里的引擎标识 → 中文说明 */
+export const ENGINE_LABELS = {
+  'offline-template': '离线模板',
+  'cloud-asr': '云端语音识别',
+  whisper: '本地 whisper.cpp',
+  'vision-ocr': '本地 OCR',
+  tesseract: '本地 tesseract'
+};
+
+export function engineText(trace) {
+  const parts = [];
+  if (trace?.asrEngine) {
+    parts.push(ENGINE_LABELS[trace.asrEngine] || trace.asrEngine);
+  }
+  if (trace?.visualEngine) {
+    parts.push(ENGINE_LABELS[trace.visualEngine] || trace.visualEngine);
+  }
+  if (trace?.engine) {
+    parts.push(ENGINE_LABELS[trace.engine] || trace.engine);
+  }
+  return parts.join(' + ');
 }
