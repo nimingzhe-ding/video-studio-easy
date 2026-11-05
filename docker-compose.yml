@@ -1,0 +1,172 @@
+# 完整部署：应用 + MySQL + Redis + MinIO + Milvus（含 etcd 依赖）
+#
+# 用法：
+#   cp .env.example .env       # 改密码与模型密钥
+#   docker compose up -d --build
+#   打开 http://localhost:9090
+#
+# 想只跑「最小演示」？那就不需要这个文件——直接 `cd server && mvn spring-boot:run`，
+# 用的是 H2 文件库 + 本地磁盘 + 内存检索，一个中间件都不依赖。
+name: video-studio-easy
+
+services:
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root123}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-video_studio}
+      MYSQL_USER: ${MYSQL_USER:-vs}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-vs123}
+      TZ: Asia/Shanghai
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      # 首次启动要初始化数据目录，20 秒内连不上是正常的；用 mysqladmin ping 而不是 TCP 探测，
+      # 因为端口开了但数据库还没 ready 时连上去会直接报错
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p${MYSQL_ROOT_PASSWORD:-root123}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # MinIO 官方镜像已从 Docker Hub 下架（minio/minio 与 quay.io/minio/minio 都返回
+  # manifest unknown / access denied），这里用社区维护的 pgsty/minio，接口与 mc 兼容。
+  minio:
+    image: ${MINIO_IMAGE:-pgsty/minio:latest}
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    ports:
+      - "${MINIO_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.18
+    restart: unless-stopped
+    command:
+      - etcd
+      - -advertise-client-urls=http://127.0.0.1:2379
+      - -listen-client-urls=http://0.0.0.0:2379
+      - --data-dir=/etcd
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: "1000"
+      ETCD_QUOTA_BACKEND_BYTES: "4294967296"
+      ETCD_SNAPSHOT_COUNT: "50000"
+    volumes:
+      - etcd-data:/etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  milvus:
+    image: milvusdb/milvus:v2.5.4
+    restart: unless-stopped
+    command: ["milvus", "run", "standalone"]
+    depends_on:
+      etcd:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+      MINIO_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      COMMON_STORAGETYPE: minio
+    ports:
+      - "${MILVUS_PORT:-19530}:19530"
+      - "${MILVUS_HTTP_PORT:-9091}:9091"
+    volumes:
+      - milvus-data:/var/lib/milvus
+    healthcheck:
+      # curl 在 milvus 镜像里没有，用自带的 grpc 健康检查脚本
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
+
+  app:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      minio:
+        condition: service_healthy
+      milvus:
+        condition: service_started
+    environment:
+      # 数据库：schema.sql 是 MySQL 方言，启动时自动建表
+      DB_URL: jdbc:mysql://mysql:3306/${MYSQL_DATABASE:-video_studio}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai&characterEncoding=utf8
+      DB_USERNAME: ${MYSQL_USER:-vs}
+      DB_PASSWORD: ${MYSQL_PASSWORD:-vs123}
+      REDIS_ENABLED: "true"
+      REDIS_HOST: redis
+      OBJECT_STORAGE_ENABLED: "true"
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      MINIO_BUCKET: ${MINIO_BUCKET:-video-studio}
+      VECTOR_ENABLED: "true"
+      MILVUS_HOST: milvus
+      MILVUS_PORT: "19530"
+      # 模型：留空则整条流水线离线运行（本地 whisper + tesseract + 确定性模板）
+      AI_API_KEY: ${AI_API_KEY:-}
+      AI_BASE_URL: ${AI_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      LLM_MODEL: ${LLM_MODEL:-qwen-plus}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-v3}
+      VISION_CAPTION_ENABLED: ${VISION_CAPTION_ENABLED:-false}
+      REALTIME_API_KEY: ${REALTIME_API_KEY:-}
+      WHISPER_MODEL_URL: ${WHISPER_MODEL_URL:-}
+      TZ: Asia/Shanghai
+    ports:
+      - "${APP_PORT:-9090}:9090"
+    volumes:
+      # 模型与本地工作副本都在这个卷里；whisper 模型首次启动时自动下载
+      - app-data:/data
+
+volumes:
+  mysql-data:
+  redis-data:
+  minio-data:
+  etcd-data:
+  milvus-data:
+  app-data:

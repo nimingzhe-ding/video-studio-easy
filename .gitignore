@@ -25,6 +25,7 @@ client/.vite/
 *.iml
 .vscode/
 .DS_Store
+._*
 
 # ---- 本地配置 ----
 .env
