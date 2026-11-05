@@ -480,27 +480,49 @@ for (int i = 1; i < span - 1; i++) {
 
 单页 Vue 3 应用，没有引入 UI 框架，样式是一套手写设计系统（`client/src/styles.css`，
 `--token` 双层：`:root` 暗色 + `:root[data-theme='light']` 亮色，布局用 grid-areas
-`topbar / sidebar main`）。
+`topbar / sidebar stage`）。
+
+### 6.1 设计语言「墨室档案」
+
+界面把一次分析当成**一份可以回放的档案**，而不是一屏数据面板。这个立意决定了三个具体选择：
+
+1. **时间码是主角**。`--mono` 等宽字体 + `font-variant-numeric: tabular-nums`，
+   报告里的 `[mm:ss]` 是赭石色胶囊、转写行首是等宽时间、进度条画成刻度尺（`.tape`）。
+   长视频的所有结论最终都要落回一个时间点，时间码必须比标题更醒目。
+2. **宋体做标题，黑体做正文**（`--font-display` / `--font`）。宋体自带"文档感"，
+   正好对应 Word/Markdown 导出这条主线；正文用 PingFang 保证小字可读。
+   `font-display: swap` 避免字体加载时闪空白。
+3. **暗色是墨室，亮色是宣纸（朱砂印）**。两套 token 不是简单反色：亮色的背景是暖米色
+   `#f1ece2` 而不是纯白，暗色的背景是 `#131110` 而不是纯黑，都靠 `body::after` 的
+   SVG `feTurbulence` 噪点（`opacity: var(--grain)`，`mix-blend-mode: overlay`）叠出一层纸纹。
+
+强调色只用赭石（`--accent #d4733f`）与朱砂（`--seal #c34a33`），刻意避开蓝紫渐变；
+证据校验徽章做成**旋转 -3.2° 的印章**（`.stamp`），比一个绿色对勾更符合"已核验"的语义。
+动效只有入场（`.stage-inner > *` 按 `@keyframes rise` 交错淡入）与 LED 呼吸点，且都在
+`prefers-reduced-motion` 下关闭。
 
 | 文件 | 职责 |
 | --- | --- |
-| `App.vue` | 布局与状态中枢：上传、媒体库、任务列表、播放器、五个标签页、主题与抽屉 |
+| `App.vue` | 状态中枢：顶栏（模型与运行数）、侧栏四张带编号的面板（投递/素材库/分析卷宗/运行环境）、档案式任务头（`NO.0007` 编号 + `.meta-ledger` 元信息 + 刻度尺进度）、播放器、五个标签页、主题与抽屉 |
 | `api.js` | REST 封装、XHR 上传（带进度）、SSE 订阅（返回关闭函数） |
 | `format.js` | 时长/大小/相对时间的格式化，以及模式、状态、阶段、引擎的中文文案 |
 | `markdown.js` | Markdown 渲染 + `[mm:ss]` 转成可点胶囊 + 目录抽取 + 搜索高亮（手写扫描，避免正则注入） |
-| `components/JobCard.vue` | 任务卡片：状态色条、阶段与进度、悬停取消/删除 |
-| `components/ReportView.vue` | 报告正文、右侧目录、导出按钮、证据校验徽章、元信息 |
-| `components/TranscriptView.vue` | 转写与画面证据：过滤、搜索高亮、关键帧灯箱、时间戳联动 |
+| `components/JobCard.vue` | 任务行：左侧虚线"胶带轨道"与状态色条、`#003` 编号、阶段进度、悬停取消/删除 |
+| `components/ReportView.vue` | 报告正文、右侧目录、导出按钮、`.stamp` 印章、`.report-meta` 元信息 |
+| `components/TranscriptView.vue` | 转写与画面证据：搜索高亮、按讲者着色、关键帧灯箱、时间戳联动、字幕导出 |
 | `components/ChatPanel.vue` | 追问对话：建议问题、Markdown 回答、引用时间戳可点 |
-| `components/RealtimePanel.vue` | 实时对话：麦克风采集、波形、状态与转写回显 |
+| `components/RealtimePanel.vue` | 实时对话：麦克风采集、声纹细柱、状态与转写回显 |
 
-两个容易踩的点：
+三个容易踩的点：
 
 1. **时间轴联动只有一条通路**：任何组件都不直接持有播放器，统一 `emit('seek', 'mm:ss')`
    给 `App.vue`，由它 `video.currentTime = parseClock(clock)`。这样报告、追问、转写三处的
    时间戳行为永远一致。
 2. **0 秒是合法时间点**：`formatDuration` 早期用 `if (!ms)` 判空，把 `00:00` 显示成 `--:--`；
    现在只把 `null/undefined/NaN/负数` 当缺失。
+3. **触摸设备没有 hover**：`.item-actions`（删除/取消）平时 `opacity: 0`，靠 `.item:hover`
+   显形；手机上永远没有 hover，必须补 `@media (hover: none) { .item-actions { opacity: 1 } }`，
+   否则这些操作按钮在移动端等于不存在。
 
 后端为界面新增的能力（播放、封面、关键帧、删除）：
 
