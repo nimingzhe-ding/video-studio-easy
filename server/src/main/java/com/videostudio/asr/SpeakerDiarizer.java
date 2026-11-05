@@ -72,8 +72,11 @@ public class SpeakerDiarizer {
     }
 
     /**
-     * 给每个片段补上 speaker 字段。任何环节失败都返回原样（不带标签），
-     * 因为说话人标签是锦上添花，不该让整条流水线失败。
+     * 给每个片段补上 speaker 字段。
+     *
+     * <p>读不到音频工作文件时直接抛错，不再返回未标注的片段：生产版本不允许把
+     * 「说话人信息缺失」静默地交给下游当成功结果。调用方会把它当作任务失败处理，
+     * 由用户看到明确错误后重试。
      */
     public Outcome assign(Path wav, List<TranscriptSegment> segments) {
         if (segments == null || segments.isEmpty()) {
@@ -87,12 +90,11 @@ public class SpeakerDiarizer {
         WavAudio audio;
         try {
             if (!Files.isReadable(wav)) {
-                return new Outcome(segments, 0, 0);
+                throw new IllegalStateException("说话人分离的音频工作文件不可读");
             }
             audio = WavAudio.read(wav);
         } catch (Exception e) {
-            log.warn("读取音频失败，跳过说话人分离: {}", e.getMessage());
-            return new Outcome(segments, 0, 0);
+            throw new IllegalStateException("说话人分离读取音频失败",e);
         }
 
         List<double[]> features = new ArrayList<>(segments.size());

@@ -58,9 +58,15 @@ public class VisualEvidenceService {
     private final FrameCaptioner captioner;
     private final ExecutorService pool;
     private final int concurrency;
+    private final com.videostudio.infra.BudgetGuard budget;
 
     public VisualEvidenceService(TextRecognizer recognizer, FrameDeduper deduper, FrameCaptioner captioner,
-                                 AppProperties props) {
+                                 AppProperties props) { this(recognizer,deduper,captioner,props,null); }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public VisualEvidenceService(TextRecognizer recognizer, FrameDeduper deduper, FrameCaptioner captioner,
+                                 AppProperties props, com.videostudio.infra.BudgetGuard budget) {
+        this.budget=budget;
         this.recognizer = recognizer;
         this.deduper = deduper;
         this.captioner = captioner;
@@ -136,12 +142,11 @@ public class VisualEvidenceService {
                 scannedFrames.add(futures.get(i).get());
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                log.warn("画面文字识别被中断");
-                break;
+                futures.forEach(f -> f.cancel(true));
+                throw new IllegalStateException("画面识别被中断",e);
             } catch (ExecutionException e) {
-                // 单帧 OCR 失败不应该让整个任务失败：跳过该帧，继续后面的
-                log.warn("画面文字识别失败 {}: {}", candidates.get(i).frame().path(),
-                        e.getCause() == null ? e.getMessage() : e.getCause().getMessage());
+                futures.forEach(f -> f.cancel(true));
+                throw new IllegalStateException("画面识别失败，分析已停止",e.getCause());
             }
         }
 
@@ -211,11 +216,15 @@ public class VisualEvidenceService {
         }
         AtomicInteger count = new AtomicInteger();
         List<Future<Map.Entry<Path, String>>> futures = new ArrayList<>(targets.size());
+        long jobId=budget==null?0:budget.currentJob();
         for (FrameExtractor.Frame frame : targets) {
             futures.add(pool.submit(() -> {
-                String caption = captioner.describe(frame.path());
-                progress.accept("画面描述 %d/%d".formatted(count.incrementAndGet(), targets.size()));
-                return Map.entry(frame.path(), caption);
+                if(budget!=null) budget.enter(jobId);
+                try {
+                    String caption = captioner.describe(frame.path());
+                    progress.accept("画面描述 %d/%d".formatted(count.incrementAndGet(), targets.size()));
+                    return Map.entry(frame.path(), caption);
+                } finally { if(budget!=null) budget.leave(); }
             }));
         }
         Map<Path, String> captions = new HashMap<>();
@@ -227,11 +236,11 @@ public class VisualEvidenceService {
                 }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                log.warn("画面描述被中断");
-                break;
+                futures.forEach(f -> f.cancel(true));
+                throw new IllegalStateException("画面描述被中断",e);
             } catch (ExecutionException e) {
-                // 描述只是增强，失败就当这一帧没有描述
-                log.warn("画面描述失败: {}", e.getCause() == null ? e.getMessage() : e.getCause().getMessage());
+                futures.forEach(f -> f.cancel(true));
+                throw new IllegalStateException("已启用的视觉描述服务调用失败",e.getCause());
             }
         }
         return captions;

@@ -36,7 +36,7 @@ public class ChunkEnricher {
         }
         List<ContextChunk> withEmbedding = attachEmbeddings(chunks, progress);
         if (!llm.enabled()) {
-            return withEmbedding;
+            throw new IllegalStateException("模型服务未配置");
         }
         List<ContextChunk> summarized = new ArrayList<>();
         int done = 0;
@@ -44,7 +44,8 @@ public class ChunkEnricher {
             done++;
             progress.accept("生成分块摘要 %d/%d".formatted(done, withEmbedding.size()));
             String summary = summarize(chunk);
-            summarized.add(summary == null || summary.isBlank() ? chunk : new ContextChunk(
+            if (summary == null || summary.isBlank()) throw new IllegalStateException("分块摘要生成失败");
+            summarized.add(new ContextChunk(
                     chunk.chunkIndex(), chunk.startMs(), chunk.endMs(), summary.strip(),
                     chunk.keywords(), chunk.visualKeywords(), chunk.transcriptText(), chunk.ocrText(),
                     chunk.embedding(), 0d));
@@ -77,7 +78,7 @@ public class ChunkEnricher {
 
     private List<ContextChunk> attachEmbeddings(List<ContextChunk> chunks, Consumer<String> progress) {
         if (!llm.enabled()) {
-            return chunks;
+            throw new IllegalStateException("模型服务未配置");
         }
         List<String> texts = chunks.stream().map(ChunkEnricher::embeddingText).toList();
         List<List<Double>> vectors = new ArrayList<>();
@@ -86,8 +87,7 @@ public class ChunkEnricher {
             progress.accept("建立向量索引 %d/%d".formatted(Math.min(i + EMBED_BATCH, texts.size()), texts.size()));
             List<List<Double>> part = llm.embed(batch);
             if (part.size() != batch.size()) {
-                log.warn("embedding 返回数量不匹配，跳过向量索引（回退为词项检索）");
-                return chunks;
+                throw new IllegalStateException("向量服务返回数量不匹配");
             }
             vectors.addAll(part);
         }

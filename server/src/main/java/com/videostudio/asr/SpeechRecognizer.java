@@ -2,7 +2,7 @@ package com.videostudio.asr;
 
 import java.nio.file.Path;
 
-/** 语音识别端口：云端 API 与本地 whisper 都实现它 */
+/** 语音识别端口：云端 ASR 实现该接口 */
 public interface SpeechRecognizer {
 
     /** 识别单个音频文件 */

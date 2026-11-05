@@ -29,7 +29,6 @@ import java.util.function.Consumer;
  * 3 路并发能压到三分之一左右。并发度由 {@code app.media.asr-concurrency} 控制：
  * <ul>
  *   <li>云端接口：受账号 QPS 限制，通常 2-3 路合适；</li>
- *   <li>本地 whisper：每个进程各自加载一份模型（small 约 500MB），并发度过高会吃满内存，</li>
  * </ul>
  * 因此默认取 3，并允许按机器情况调整。
  *
@@ -41,16 +40,14 @@ public class TranscriptionService {
     private static final Logger log = LoggerFactory.getLogger(TranscriptionService.class);
 
     private final CloudSpeechRecognizer cloud;
-    private final WhisperCliRecognizer whisper;
     private final AudioExtractor audioExtractor;
     private final SpeakerDiarizer diarizer;
     private final AppProperties props;
     private final ExecutorService pool;
 
-    public TranscriptionService(CloudSpeechRecognizer cloud, WhisperCliRecognizer whisper,
+    public TranscriptionService(CloudSpeechRecognizer cloud,
                                 AudioExtractor audioExtractor, SpeakerDiarizer diarizer, AppProperties props) {
         this.cloud = cloud;
-        this.whisper = whisper;
         this.audioExtractor = audioExtractor;
         this.diarizer = diarizer;
         this.props = props;
@@ -83,7 +80,7 @@ public class TranscriptionService {
         int sliceSeconds = props.getMedia().getAsrSegmentSeconds();
         List<AudioExtractor.Slice> slices = audioExtractor.slice(wav, sliceDir, durationMs, sliceSeconds);
         if (slices.isEmpty()) {
-            return new Outcome(List.of(), "none", List.of("未能切分出音频片段，跳过语音识别"));
+            throw new IllegalStateException("音频切片失败");
         }
 
         List<String> warnings = Collections.synchronizedList(new ArrayList<>());
@@ -103,13 +100,12 @@ public class TranscriptionService {
             try {
                 results.add(future.get());
             } catch (InterruptedException e) {
+                futures.forEach(f -> f.cancel(true));
                 Thread.currentThread().interrupt();
-                warnings.add("语音识别被中断");
-                break;
+                throw new IllegalStateException("语音识别被中断",e);
             } catch (ExecutionException e) {
-                log.warn("语音识别任务异常: {}", e.getCause() == null ? e.getMessage() : e.getCause().getMessage());
-                warnings.add("部分片段识别失败: " + Texts.oneLine(String.valueOf(
-                        e.getCause() == null ? e.getMessage() : e.getCause().getMessage()), 120));
+                futures.forEach(f -> f.cancel(true));
+                throw new IllegalStateException("语音片段识别失败，分析已停止",e.getCause());
             }
         }
 
@@ -152,29 +148,13 @@ public class TranscriptionService {
     }
 
     private Optional<SpeechRecognizer.Result> recognize(Path file, List<String> warnings) {
-        if (cloud.available()) {
-            for (int attempt = 1; attempt <= Math.max(1, 2); attempt++) {
-                try {
-                    return Optional.of(cloud.transcribe(file));
-                } catch (RuntimeException e) {
-                    log.warn("云端 ASR 第 {} 次失败 {}: {}", attempt, file.getFileName(), e.getMessage());
-                    if (attempt == 2) {
-                        warnings.add("云端语音识别失败，已回退本地 whisper: " + Texts.oneLine(e.getMessage(), 120));
-                    }
-                }
-            }
+        if (!cloud.available()) throw new IllegalStateException("云端语音识别尚未配置");
+        RuntimeException last=null;
+        for(int attempt=0;attempt<2;attempt++) {
+            try { return Optional.of(cloud.transcribe(file)); }
+            catch(RuntimeException ex) { last=ex; if(Thread.currentThread().isInterrupted()) throw ex; }
         }
-        if (whisper.available()) {
-            try {
-                return Optional.of(whisper.transcribe(file));
-            } catch (RuntimeException e) {
-                log.warn("本地 whisper 失败 {}: {}", file.getFileName(), e.getMessage());
-                warnings.add("本地语音识别失败: " + Texts.oneLine(e.getMessage(), 120));
-            }
-        } else if (!cloud.available()) {
-            warnings.add("未配置任何语音识别引擎（云端或本地 whisper），本次仅基于画面文字分析");
-        }
-        return Optional.empty();
+        throw new IllegalStateException("云端语音识别失败，请检查服务配置后重试",last);
     }
 
     /** 合并过碎的片段：同一说话人的连续短句拼成一句，减少后续上下文里的噪声 */

@@ -69,9 +69,7 @@ public class AnalysisAgent {
         AgentModels.RetrievalIntent intent = planRetrieval(request, progress);
         AnalysisMode mode = request.mode();
 
-        if (!llm.enabled()) {
-            return offline(request, intent, mode, progress);
-        }
+        if (!llm.enabled()) throw new IllegalStateException("模型服务未配置");
 
         // 三重上限：轮次、墙钟、token 预算。前两者防「跑太久」，后者防「花太多」——
         // 提示词写错导致循环调用时，只有 token 预算能真正止损。
@@ -97,16 +95,13 @@ public class AnalysisAgent {
         int maxRounds = Math.max(1, props.getMaxRounds());
         while (rounds < maxRounds && Instant.now().isBefore(deadline)) {
             if (budget != null && budget.exceeded(request.jobId())) {
-                progress.accept("已超出本次任务预算，停止继续生成");
-                log.warn("job {} 超出预算，提前结束于第 {} 轮", request.jobId(), rounds);
-                break;
+                throw new IllegalStateException("本任务模型预算已用尽");
             }
             rounds++;
             progress.accept("第 %d 轮：生成结构化产物".formatted(rounds));
             draft = execute(request, mode, plan, evidenceSegments, evidenceVisuals, draft, critique);
             if (draft == null || draft.empty()) {
-                progress.accept("模型未返回可用产物，切换到确定性模板");
-                return offline(request, intent, mode, progress);
+                throw new IllegalStateException("模型未返回有效的结构化产物");
             }
             progress.accept("第 %d 轮：证据校验".formatted(rounds));
             critique = critique(request, plan, draft, evidenceSegments, evidenceVisuals);
@@ -134,11 +129,8 @@ public class AnalysisAgent {
             }
         }
 
-        if (draft == null) {
-            return offline(request, intent, mode, progress);
-        }
-        if (critique == null) {
-            critique = AgentModels.Critique.pass();
+        if (draft == null || critique == null || !critique.passed()) {
+            throw new IllegalStateException("分析未通过证据校验或已超时，请调整目标后重试");
         }
         return new Outcome(draft, critique, plan, mode, "", rounds, "agent/" + llmName());
     }
@@ -147,7 +139,7 @@ public class AnalysisAgent {
 
     private AgentModels.RetrievalIntent planRetrieval(Request request, Consumer<String> progress) {
         if (!llm.enabled()) {
-            return ContextRenderer.fallbackIntent(request.goal());
+            throw new IllegalStateException("模型服务未配置");
         }
         String user = prompts.get("retrieval-planner") + "\n\n用户目标：" + request.goal();
         String raw = ask(prompts.get("system"), user, 0.2, 400, "retrieval-plan");
@@ -167,13 +159,7 @@ public class AnalysisAgent {
             String repair = user + "\n\n上一份计划不是合法结构，请补全目标理解并输出 1 到 5 个非空任务。" + JSON_RETRY_SUFFIX;
             plan = ContextRenderer.parsePlan(ask(prompts.get("system"), repair, 0.1, 700, "plan-repair"));
         }
-        if (plan == null) {
-            List<String> fallback = new ArrayList<>();
-            fallback.add("梳理整体内容脉络与关键结论");
-            fallback.addAll(mode.outlineHints());
-            plan = new AgentModels.Plan("理解并总结：" + Texts.oneLine(request.goal(), 80),
-                    fallback.subList(0, Math.min(5, fallback.size())));
-        }
+        if (plan == null) throw new IllegalStateException("模型返回的计划结构不合法");
         return plan;
     }
 
@@ -212,116 +198,11 @@ public class AnalysisAgent {
         String raw = ask(prompts.get("system"), user, 0.0, 900, "critic");
         AgentModels.Critique critique = ContextRenderer.parseCritique(raw);
         if (critique == null) {
-            critique = AgentModels.Critique.pass();
+            throw new IllegalStateException("模型返回的证据校验结构不合法");
         }
         EvidenceValidator.Outcome outcome = EvidenceValidator.verify(draft, segments, visuals,
                 sectionKeysList(request.mode()));
         return EvidenceValidator.merge(critique, outcome);
-    }
-
-    // ------------------------------------------------------------- 离线回退
-
-    /**
-     * 没有 API key 时的确定性产物：用分块摘要 + 关键句拼出报告。
-     * <p>保证 demo 在完全离线的情况下也能上传、转写、抽帧、出文档。
-     */
-    private Outcome offline(Request request, AgentModels.RetrievalIntent intent, AnalysisMode mode,
-                            Consumer<String> progress) {
-        progress.accept("模型未配置，使用确定性模板生成报告");
-        List<HybridRetriever.Hit> hits = retriever.search(request.jobId(), intent.query(), request.chunks(),
-                request.transcripts(), request.visuals());
-        List<TranscriptSegment> segments = new ArrayList<>();
-        List<VisualEvidence> visuals = new ArrayList<>();
-        for (HybridRetriever.Hit hit : hits) {
-            segments.addAll(hit.segments());
-            visuals.addAll(hit.evidences());
-        }
-        if (segments.isEmpty()) {
-            segments.addAll(request.transcripts());
-        }
-        if (visuals.isEmpty()) {
-            visuals.addAll(request.visuals());
-        }
-        segments = dedupe(segments);
-        visuals = dedupeVisual(visuals);
-
-        List<String> conclusions = new ArrayList<>();
-        List<AgentModels.Evidence> evidence = new ArrayList<>();
-        for (TranscriptSegment segment : segments.stream().limit(8).toList()) {
-            String text = Texts.oneLine(segment.text(), 120);
-            if (text.isBlank()) {
-                continue;
-            }
-            conclusions.add(text);
-            // 说话人写进 source：报告里的证据行会显示成「ASR（讲者 A）」，读者一眼能看到谁说的；
-            // 校验器只做 source.contains("ASR")，加后缀不影响原有判定。
-            String source = Texts.isBlank(segment.speaker()) ? "ASR" : "ASR（" + segment.speaker() + "）";
-            evidence.add(new AgentModels.Evidence(segment.startMs(), source, text, text));
-        }
-        List<AgentModels.Section> sections = new ArrayList<>();
-        List<String> hints = mode.outlineHints();
-        for (int i = 0; i < hints.size(); i++) {
-            // 离线模式也要把小节填满：没有模型时用确定性素材（画面文字 + 关键片段）充当内容，
-            // 否则学习/评审/创作模式的报告只剩一个标题和空壳，看不出结构差异。
-            sections.add(new AgentModels.Section(sectionKey(mode, hints.get(i)), hints.get(i),
-                    offlineSectionItems(i, hints.get(i), segments, visuals)));
-        }
-        List<String> suggestions = List.of(
-                "配置 AI_API_KEY 后可获得基于大模型的深度分析与更丰富的结构化小节。",
-                "结合时间戳回到原片核对关键结论，尤其是数字、人名与结论性表述。");
-        AgentModels.Draft draft = new AgentModels.Draft(
-                "离线摘要：" + Texts.oneLine(request.goal(), 40), conclusions, evidence, suggestions, sections);
-        AgentModels.Critique critique = AgentModels.Critique.pass();
-        return new Outcome(draft, critique, new AgentModels.Plan("离线模式", List.of("抽取关键片段")),
-                mode, "", 1, "offline-template");
-    }
-
-    /**
-     * 离线模式的分节内容：不编造结论，只把已有证据按小节重新组织，
-     * 让「学习笔记/评审纪要/创作素材」的结构在无模型时仍然成立。
-     */
-    private List<String> offlineSectionItems(int index, String hint,
-                                             List<TranscriptSegment> segments, List<VisualEvidence> visuals) {
-        List<String> items = new ArrayList<>();
-        List<String> screenTexts = new ArrayList<>();
-        for (VisualEvidence visual : visuals) {
-            for (String line : Texts.normalizeWhitespace(visual.displayText()).split("\n")) {
-                if (!line.isBlank()) {
-                    screenTexts.add(Times.format(visual.timeMs()) + " " + Texts.oneLine(line, 60));
-                }
-            }
-        }
-        switch (index) {
-            case 0 -> {
-                if (!segments.isEmpty()) {
-                    items.add(Texts.oneLine(segments.get(0).text(), 100));
-                } else if (!screenTexts.isEmpty()) {
-                    items.add(screenTexts.get(0));
-                }
-            }
-            case 1 -> {
-                if (hasScreenText(screenTexts)) {
-                    items.addAll(screenTexts.subList(0, Math.min(6, screenTexts.size())));
-                }
-                for (TranscriptSegment segment : segments.stream().limit(4).toList()) {
-                    items.add(Times.formatBracket(segment.startMs()) + " " + Texts.oneLine(segment.text(), 80));
-                }
-            }
-            default -> {
-                int from = Math.min(index, Math.max(0, segments.size() - 1));
-                for (TranscriptSegment segment : segments.subList(from, Math.min(from + 2, segments.size()))) {
-                    items.add(Times.formatBracket(segment.startMs()) + " " + Texts.oneLine(segment.text(), 90));
-                }
-                if (items.isEmpty() && !screenTexts.isEmpty()) {
-                    items.add(screenTexts.get(Math.min(index, screenTexts.size() - 1)));
-                }
-            }
-        }
-        return items;
-    }
-
-    private static boolean hasScreenText(List<String> screenTexts) {
-        return screenTexts != null && !screenTexts.isEmpty();
     }
 
     // ------------------------------------------------------------------ 工具

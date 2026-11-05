@@ -64,9 +64,7 @@ public class FrameCaptioner {
             return "";
         }
         String raw = llm.vision(PROMPT, dataUri, "frame-caption");
-        if (raw == null || raw.isBlank()) {
-            return "";
-        }
+        if (raw == null || raw.isBlank()) throw new IllegalStateException("视觉模型返回空内容");
         return Texts.oneLine(Texts.normalizeWhitespace(raw), MAX_CHARS);
     }
 
@@ -74,13 +72,10 @@ public class FrameCaptioner {
     private String toDataUri(Path frame) {
         try {
             byte[] bytes = Files.readAllBytes(frame);
-            if (bytes.length == 0) {
-                return "";
-            }
+            if (bytes.length == 0) throw new IllegalStateException("关键帧为空，无法描述");
             return "data:image/jpeg;base64," + Base64.getEncoder().encodeToString(bytes);
         } catch (IOException e) {
-            log.warn("读取关键帧失败，跳过视觉描述 {}: {}", frame, e.getMessage());
-            return "";
+            throw new IllegalStateException("读取关键帧失败",e);
         }
     }
 }

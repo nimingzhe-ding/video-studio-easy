@@ -57,7 +57,7 @@ public class CommandTextRecognizer implements TextRecognizer {
     @Override
     public String recognize(Path image) {
         if (!available()) {
-            return "";
+            throw new IllegalStateException("OCR 工具不可用");
         }
         List<String> cmd = new ArrayList<>();
         cmd.add(command);
@@ -73,10 +73,9 @@ public class CommandTextRecognizer implements TextRecognizer {
         ProcessRunner.Result result = runner.run(cmd,
                 Duration.ofSeconds(props.getMedia().getOcrTimeoutSeconds()));
         if (result.timedOut()) {
-            log.warn("OCR 超时: {}", image.getFileName());
-            return "";
+            throw new IllegalStateException("OCR 识别超时");
         }
-        // tesseract 在没有文字时会以非 0 退出且 stdout 为空，属于正常情况
+        if (!result.ok()) throw new IllegalStateException("OCR 执行失败，请检查服务端工具与语言包");
         return clean(result.stdout());
     }
 

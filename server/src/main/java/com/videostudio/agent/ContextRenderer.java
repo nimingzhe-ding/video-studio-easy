@@ -200,30 +200,15 @@ public final class ContextRenderer {
     public static AgentModels.RetrievalIntent parseIntent(String raw, String fallbackGoal) {
         JsonNode root = tree(raw);
         if (root == null) {
-            return fallbackIntent(fallbackGoal);
+            throw new IllegalStateException("检索规划结构不合法");
         }
         String semantic = root.path("semanticQuery").asText("");
         List<String> keywords = strings(root.path("keywords"), 10);
         List<String> visual = strings(root.path("visualKeywords"), 10);
         if (semantic.isBlank() && keywords.isEmpty()) {
-            return fallbackIntent(fallbackGoal);
+            throw new IllegalStateException("检索规划结构不合法");
         }
         return new AgentModels.RetrievalIntent(semantic.isBlank() ? fallbackGoal : semantic, keywords, visual);
-    }
-
-    /** 模型不可用时的确定性检索意图：按标点切词，去重保留 ≥2 字符的词 */
-    public static AgentModels.RetrievalIntent fallbackIntent(String goal) {
-        List<String> tokens = new ArrayList<>();
-        for (String token : (goal == null ? "" : goal).split("[\\s，。！？、,.;:：；!?]+")) {
-            String t = token.strip();
-            if (t.length() >= 2 && !tokens.contains(t)) {
-                tokens.add(t);
-            }
-            if (tokens.size() >= 8) {
-                break;
-            }
-        }
-        return new AgentModels.RetrievalIntent(goal == null ? "" : goal, tokens, List.of());
     }
 
     public static AgentModels.Draft parseDraft(String raw) {
@@ -273,15 +258,6 @@ public final class ContextRenderer {
                 strings(root.path("missingRequirements"), 20),
                 strings(root.path("unsupportedClaims"), 20),
                 timestamps);
-    }
-
-    /** 解析模式路由结果；失败回退 GENERAL */
-    public static AnalysisMode parseMode(String raw, AnalysisMode fallback) {
-        JsonNode root = tree(raw);
-        if (root == null) {
-            return fallback;
-        }
-        return AnalysisMode.of(root.path("mode").asText(""));
     }
 
     public static String parseModeReason(String raw) {
