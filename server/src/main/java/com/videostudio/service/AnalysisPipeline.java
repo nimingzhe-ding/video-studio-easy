@@ -9,6 +9,7 @@ import com.videostudio.common.Json;
 import com.videostudio.common.Texts;
 import com.videostudio.common.Times;
 import com.videostudio.config.AgentProperties;
+import com.videostudio.config.AppProperties;
 import com.videostudio.config.AiProperties;
 import com.videostudio.context.ChunkBuilder;
 import com.videostudio.context.ChunkEnricher;
@@ -27,6 +28,8 @@ import com.videostudio.media.FrameExtractor;
 import com.videostudio.media.MediaInfo;
 import com.videostudio.media.MediaProbe;
 import com.videostudio.media.Storage;
+import com.videostudio.retrieval.VectorStore;
+import com.videostudio.storage.MediaObjects;
 import com.videostudio.ocr.VisualEvidenceService;
 import com.videostudio.report.DocxExporter;
 import com.videostudio.repository.ChunkRepository;
@@ -82,8 +85,11 @@ public class AnalysisPipeline {
     private final EvidenceService evidenceService;
     private final DocxExporter docxExporter;
     private final Storage storage;
+    private final MediaObjects objects;
+    private final VectorStore vectors;
     private final AgentProperties agentProps;
     private final AiProperties aiProps;
+    private final AppProperties appProps;
 
     public AnalysisPipeline(MediaRepository mediaRepository, JobRepository jobRepository,
                             JobEventRepository eventRepository, TranscriptRepository transcriptRepository,
@@ -92,8 +98,8 @@ public class AnalysisPipeline {
                             FrameExtractor frameExtractor, TranscriptionService transcriptionService,
                             VisualEvidenceService visualService, ChunkEnricher chunkEnricher,
                             AnalysisAgent agent, EvidenceService evidenceService, DocxExporter docxExporter,
-                            Storage storage,
-                            AgentProperties agentProps, AiProperties aiProps) {
+                            Storage storage, MediaObjects objects, VectorStore vectors,
+                            AgentProperties agentProps, AiProperties aiProps, AppProperties appProps) {
         this.mediaRepository = mediaRepository;
         this.jobRepository = jobRepository;
         this.eventRepository = eventRepository;
@@ -111,8 +117,11 @@ public class AnalysisPipeline {
         this.evidenceService = evidenceService;
         this.docxExporter = docxExporter;
         this.storage = storage;
+        this.objects = objects;
+        this.vectors = vectors;
         this.agentProps = agentProps;
         this.aiProps = aiProps;
+        this.appProps = appProps;
     }
 
     /** 单个任务执行过程中的上下文，避免在方法间传递一长串参数 */
@@ -167,6 +176,13 @@ public class AnalysisPipeline {
         MediaAsset asset = mediaRepository.find(job.assetId())
                 .orElseThrow(() -> new IllegalStateException("媒体不存在: " + job.assetId()));
         Path source = Path.of(asset.storagePath());
+        // 多副本部署时源文件可能只存在于对象存储里，先从桶里拉一份本地副本
+        if (objects.enabled() && !Files.isReadable(source)) {
+            Path pulled = objects.ensureSource(asset.id(), asset.name(), source);
+            if (pulled != null) {
+                source = pulled;
+            }
+        }
         Run run = new Run(job, asset, source);
         try {
             jobRepository.markRunning(jobId);
@@ -196,14 +212,18 @@ public class AnalysisPipeline {
         EvidenceService.Reused reused = evidenceService.findReusable(asset.id(), run.jobId);
         if (reused.present() && !evidenceService.framesAvailable(reused.visuals())) {
             run.warn("历史关键帧文件已被清理，本次重新抽取画面证据");
-            reused = new EvidenceService.Reused(reused.sourceJobId(), reused.segments(), List.of(), List.of());
+            reused = new EvidenceService.Reused(reused.sourceJobId(), reused.segments(), List.of(), List.of(),
+                    reused.speakerSeparation());
         }
 
         // ---- 语音：抽音频 → 切片 → ASR
         List<TranscriptSegment> transcripts = List.of();
         String asrEngine = "none";
+        // 只有真正跑过 ASR 且开着说话人分离，才算「这份转写已经带有说话人信息」
+        boolean separated = false;
         if (!reused.segments().isEmpty()) {
             transcripts = reused.segments();
+            separated = reused.speakerSeparation();
             asrEngine = transcripts.get(0).source() == null ? "reused" : transcripts.get(0).source();
             transcriptRepository.replace(asset.id(), run.jobId, transcripts);
             run.emit(JobStage.TRANSCRIBE, JobEvent.TYPE_LOG, "info", JobStage.TRANSCRIBE.floor(),
@@ -216,6 +236,7 @@ public class AnalysisPipeline {
                     run.durationMs, run.progress(JobStage.TRANSCRIBE));
             transcripts = outcome.segments();
             asrEngine = outcome.engine();
+            separated = appProps.getMedia().isSpeakerSeparationEnabled();
             outcome.warnings().forEach(run::warn);
             transcriptRepository.replace(asset.id(), run.jobId, transcripts);
             String speakerNote = outcome.speakers() > 1 ? "，%d 位说话人".formatted(outcome.speakers()) : "";
@@ -276,6 +297,13 @@ public class AnalysisPipeline {
             run.emit(JobStage.CHUNK, JobEvent.TYPE_METRIC, "info", JobStage.CHUNK.floor(),
                     "生成 %d 个上下文分块".formatted(chunks.size()));
         }
+        // 向量库只是语义检索的加速器：写失败不影响后续，检索端会自动退回内存计算
+        if (vectors.enabled()) {
+            vectors.index(asset.id(), run.jobId, chunks);
+            long withVector = chunks.stream().filter(c -> !c.embedding().isEmpty()).count();
+            run.emit(JobStage.CHUNK, JobEvent.TYPE_LOG, "info", JobStage.CHUNK.floor(),
+                    "向量索引 %s：%d/%d 个分块".formatted(vectors.provider(), withVector, chunks.size()));
+        }
 
         // ---- Agent
         run.stage(JobStage.RETRIEVE, "检索相关证据");
@@ -304,9 +332,20 @@ public class AnalysisPipeline {
         List<DocxExporter.Figure> figures = reportFigures(draft, visuals);
         try {
             docxExporter.export(markdown, docx, figures);
+            objects.putReport(asset.id(), run.jobId, docx);
         } catch (Exception e) {
             run.warn("生成 Word 文档失败：" + Texts.oneLine(e.getMessage(), 120));
             docx = null;
+        }
+        // 关键帧只上传真正进了证据集、且被报告插图用到的那些，避免把抽帧中间产物全搬上去
+        if (objects.enabled() && !visuals.isEmpty()) {
+            List<Path> frames = visuals.stream()
+                    .map(VisualEvidence::framePath)
+                    .filter(p -> !Texts.isBlank(p))
+                    .map(Path::of)
+                    .filter(Files::isReadable)
+                    .toList();
+            objects.putFrames(asset.id(), run.jobId, frames);
         }
 
         Map<String, Object> trace = new LinkedHashMap<>();
@@ -327,6 +366,10 @@ public class AnalysisPipeline {
         trace.put("tasks", outcome.plan().tasks());
         trace.put("understoodGoal", outcome.plan().understoodGoal());
         trace.put("transcriptSegments", transcripts.size());
+        // 记下这份转写是否已经带有说话人信息：证据复用据此判断旧任务要不要重新识别
+        if (separated) {
+            trace.put("speakerSeparation", true);
+        }
         int speakerCount = speakers(transcripts);
         if (speakerCount > 1) {
             trace.put("speakers", speakerCount);

@@ -7,6 +7,8 @@ import com.videostudio.config.RealtimeProperties;
 import com.videostudio.domain.AnalysisJob;
 import com.videostudio.domain.JobEvent;
 import com.videostudio.domain.JobStatus;
+import com.videostudio.retrieval.VectorStore;
+import com.videostudio.storage.MediaObjects;
 import com.videostudio.repository.JobEventRepository;
 import com.videostudio.repository.JobRepository;
 import org.slf4j.Logger;
@@ -20,6 +22,7 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.IOException;
 import java.time.Duration;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Executors;
@@ -48,13 +51,18 @@ public class JobEventController {
     private final JobEventRepository eventRepository;
     private final AiProperties ai;
     private final RealtimeProperties realtime;
+    private final MediaObjects objects;
+    private final VectorStore vectors;
 
     public JobEventController(JobRepository jobRepository, JobEventRepository eventRepository,
-                              AiProperties ai, RealtimeProperties realtime) {
+                              AiProperties ai, RealtimeProperties realtime,
+                              MediaObjects objects, VectorStore vectors) {
         this.jobRepository = jobRepository;
         this.eventRepository = eventRepository;
         this.ai = ai;
         this.realtime = realtime;
+        this.objects = objects;
+        this.vectors = vectors;
     }
 
     @GetMapping("/{id}/stream")
@@ -120,13 +128,20 @@ public class JobEventController {
     public ApiResponse<Map<String, Object>> runtime() {
         // 必须和其余接口一样包一层 ApiResponse：前端 request() 统一取 payload.data，
         // 返回裸 Map 会让整块环境信息在前端变成 undefined（表现为永远显示「离线模式」）。
-        return ApiResponse.success(Map.of(
-                "aiEnabled", ai.cloudEnabled(),
-                "model", ai.getModel(),
-                "embeddingModel", ai.getEmbeddingModel(),
-                "visionCaptionEnabled", ai.visionCaptionEnabled(),
-                "visionModel", ai.getVisionModel(),
-                "realtimeEnabled", realtime.ready(),
-                "status", JobStatus.values().length));
+        // Map.of 最多十对键值，字段再多就得换成有序 Map（顺便保证输出顺序稳定，便于比对）
+        Map<String, Object> info = new LinkedHashMap<>();
+        info.put("aiEnabled", ai.cloudEnabled());
+        info.put("model", ai.getModel());
+        info.put("embeddingModel", ai.getEmbeddingModel());
+        info.put("visionCaptionEnabled", ai.visionCaptionEnabled());
+        info.put("visionModel", ai.getVisionModel());
+        info.put("realtimeEnabled", realtime.ready());
+        // 诊断用：一眼看出当前部署跑的是本地磁盘 + 内存检索，还是接了外部中间件
+        info.put("objectStorage", objects.store().provider());
+        info.put("objectStorageEnabled", objects.enabled());
+        info.put("vectorStore", vectors.provider());
+        info.put("vectorStoreEnabled", vectors.enabled());
+        info.put("status", JobStatus.values().length);
+        return ApiResponse.success(info);
     }
 }

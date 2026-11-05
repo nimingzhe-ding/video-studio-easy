@@ -4,6 +4,7 @@ import com.videostudio.common.ApiException;
 import com.videostudio.domain.AnalysisJob;
 import com.videostudio.domain.MediaAsset;
 import com.videostudio.media.Storage;
+import com.videostudio.retrieval.VectorStore;
 import com.videostudio.repository.ChatRepository;
 import com.videostudio.repository.ChunkRepository;
 import com.videostudio.repository.JobEventRepository;
@@ -12,6 +13,7 @@ import com.videostudio.repository.MediaRepository;
 import com.videostudio.repository.ReportRepository;
 import com.videostudio.repository.TranscriptRepository;
 import com.videostudio.repository.VisualRepository;
+import com.videostudio.storage.MediaObjects;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -43,12 +45,15 @@ public class CleanupService {
     private final ChatRepository chatRepository;
     private final JobService jobService;
     private final Storage storage;
+    private final MediaObjects objects;
+    private final VectorStore vectors;
 
     public CleanupService(MediaRepository mediaRepository, JobRepository jobRepository,
                           JobEventRepository eventRepository, TranscriptRepository transcriptRepository,
                           VisualRepository visualRepository, ChunkRepository chunkRepository,
                           ReportRepository reportRepository, ChatRepository chatRepository,
-                          JobService jobService, Storage storage) {
+                          JobService jobService, Storage storage,
+                          MediaObjects objects, VectorStore vectors) {
         this.mediaRepository = mediaRepository;
         this.jobRepository = jobRepository;
         this.eventRepository = eventRepository;
@@ -59,6 +64,8 @@ public class CleanupService {
         this.chatRepository = chatRepository;
         this.jobService = jobService;
         this.storage = storage;
+        this.objects = objects;
+        this.vectors = vectors;
     }
 
     /** 删除单个任务：运行中的先取消，再清证据与磁盘目录 */
@@ -73,6 +80,9 @@ public class CleanupService {
         deleteQuietly(storage.mediaDir(job.assetId()).resolve("asr").resolve("job-" + jobId));
         deleteQuietly(storage.mediaDir(job.assetId()).resolve("audio").resolve("job-" + jobId));
         deleteQuietly(storage.reportDocx(job.assetId(), jobId));
+        // 外部存储里的副本也要收掉，否则桶里会攒下没人引用的关键帧与向量
+        objects.deleteJob(job.assetId(), jobId);
+        vectors.deleteJob(jobId);
         log.info("已删除任务 {} (asset={})", jobId, job.assetId());
     }
 
@@ -90,6 +100,8 @@ public class CleanupService {
         }
         mediaRepository.delete(assetId);
         deleteQuietly(storage.root().resolve("media").resolve(Long.toString(assetId)));
+        objects.deleteAsset(assetId);
+        vectors.deleteAsset(assetId);
         log.info("已删除媒体 {} ({}), 连带任务 {}", assetId, asset.name(), jobIds);
     }
 

@@ -12,6 +12,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * 轻量结构升级：schema.sql 用的是 {@code CREATE TABLE IF NOT EXISTS}，对已存在的表不会补列。
@@ -52,15 +53,36 @@ public class SchemaUpgrade implements ApplicationRunner {
         }
     }
 
+    /**
+     * 表名大小写在不同库上不一样：H2 默认把未加引号的标识符存成大写，
+     * MySQL 在 Linux 上按 lower_case_table_names=0 保留原样（我们 DDL 里写的是小写）。
+     * 所以两种写法都要试一次，任一命中即认为列已存在。
+     */
     private boolean hasColumn(Column column) {
-        try {
-            DatabaseMetaData meta = jdbc.getDataSource().getConnection().getMetaData();
-            try (ResultSet rs = meta.getColumns(null, null, column.table().toUpperCase(), column.name().toUpperCase())) {
+        for (String table : List.of(column.table(), column.table().toUpperCase(Locale.ROOT))) {
+            for (String name : List.of(column.name(), column.name().toUpperCase(Locale.ROOT))) {
+                Boolean found = lookup(table, name);
+                if (found == null) {
+                    return true;
+                }
+                if (found) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** 返回 null 表示元数据不可读（此时跳过升级，宁可不改也不误改） */
+    private Boolean lookup(String table, String column) {
+        try (var connection = jdbc.getDataSource().getConnection()) {
+            DatabaseMetaData meta = connection.getMetaData();
+            try (ResultSet rs = meta.getColumns(null, null, table, column)) {
                 return rs.next();
             }
         } catch (SQLException e) {
-            log.warn("读取数据库元数据失败，跳过 {}.{} 的检查：{}", column.table(), column.name(), e.getMessage());
-            return true;
+            log.warn("读取数据库元数据失败，跳过 {}.{} 的检查：{}", table, column, e.getMessage());
+            return null;
         }
     }
 }

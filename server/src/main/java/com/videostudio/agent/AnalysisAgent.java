@@ -59,7 +59,7 @@ public class AnalysisAgent {
         }
 
         Instant deadline = Instant.now().plus(Duration.ofMillis(Math.max(30_000, props.getMaxDurationMs())));
-        List<HybridRetriever.Hit> hits = retriever.search(intent.query(), request.chunks(),
+        List<HybridRetriever.Hit> hits = retriever.search(request.jobId(), intent.query(), request.chunks(),
                 request.transcripts(), request.visuals());
         List<TranscriptSegment> evidenceSegments = new ArrayList<>();
         List<VisualEvidence> evidenceVisuals = new ArrayList<>();
@@ -99,7 +99,7 @@ public class AnalysisAgent {
                 ContextRenderer.Retrieved recalled = recallByCritique(request, critique);
                 evidenceSegments = expand(evidenceSegments, recalled.segments());
                 evidenceVisuals = expandVisual(evidenceVisuals, recalled.visuals());
-                List<HybridRetriever.Hit> extra = retriever.search(critiqueQuery(request.goal(), critique),
+                List<HybridRetriever.Hit> extra = retriever.search(request.jobId(), critiqueQuery(request.goal(), critique),
                         request.chunks(), request.transcripts(), request.visuals());
                 for (HybridRetriever.Hit hit : extra) {
                     evidenceSegments = expand(evidenceSegments, hit.segments());
@@ -206,7 +206,7 @@ public class AnalysisAgent {
     private Outcome offline(Request request, AgentModels.RetrievalIntent intent, AnalysisMode mode,
                             Consumer<String> progress) {
         progress.accept("模型未配置，使用确定性模板生成报告");
-        List<HybridRetriever.Hit> hits = retriever.search(intent.query(), request.chunks(),
+        List<HybridRetriever.Hit> hits = retriever.search(request.jobId(), intent.query(), request.chunks(),
                 request.transcripts(), request.visuals());
         List<TranscriptSegment> segments = new ArrayList<>();
         List<VisualEvidence> visuals = new ArrayList<>();

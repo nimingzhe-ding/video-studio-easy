@@ -5,6 +5,7 @@ import com.videostudio.common.Json;
 import com.videostudio.domain.MediaAsset;
 import com.videostudio.domain.MediaKind;
 import com.videostudio.repository.MediaRepository;
+import com.videostudio.storage.MediaObjects;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -37,11 +38,14 @@ public class MediaIngestService {
     private final MediaRepository mediaRepository;
     private final MediaProbe probe;
     private final Storage storage;
+    private final MediaObjects objects;
 
-    public MediaIngestService(MediaRepository mediaRepository, MediaProbe probe, Storage storage) {
+    public MediaIngestService(MediaRepository mediaRepository, MediaProbe probe, Storage storage,
+                              MediaObjects objects) {
         this.mediaRepository = mediaRepository;
         this.probe = probe;
         this.storage = storage;
+        this.objects = objects;
     }
 
     public Optional<MediaAsset> findAsset(long id) {
@@ -108,6 +112,8 @@ public class MediaIngestService {
     /** 回写路径 → 探测 → 回写派生字段，两条入口共用 */
     private MediaAsset finish(long id, String name, Path target) {
         mediaRepository.updateStoragePath(id, target.toAbsolutePath().toString());
+        // 先入库再探测：即使后续分析失败，重新分析的请求也能从桶里拿回源文件
+        objects.putSource(id, name, target);
 
         String metaJson;
         long durationMs = 0;

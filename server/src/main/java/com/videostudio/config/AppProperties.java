@@ -13,6 +13,8 @@ public class AppProperties {
     private final Storage storage = new Storage();
     private final Media media = new Media();
     private final Upload upload = new Upload();
+    private final ObjectStorage objectStorage = new ObjectStorage();
+    private final Vector vector = new Vector();
 
     public Storage getStorage() {
         return storage;
@@ -24,6 +26,68 @@ public class AppProperties {
 
     public Upload getUpload() {
         return upload;
+    }
+
+    public ObjectStorage getObjectStorage() {
+        return objectStorage;
+    }
+
+    public Vector getVector() {
+        return vector;
+    }
+
+    /**
+     * 向量库（Milvus）。
+     * <p>默认关闭，检索走内存里的余弦暴力扫描——单素材只有几十到几百个分块，够用且零依赖。
+     * 开启后语义相似度改由 Milvus 计算；连不上时会自动回落，不让分析失败。
+     */
+    public static class Vector {
+        private boolean enabled = false;
+        private String host = "127.0.0.1";
+        private int port = 19530;
+        private String collection = "video_studio_chunks";
+        /** 查询时返回的候选数；太小会把相关分块挤掉，太大又失去向量库的意义 */
+        private int topK = 20;
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public String getHost() {
+            return host;
+        }
+
+        public void setHost(String host) {
+            this.host = host;
+        }
+
+        public int getPort() {
+            return port;
+        }
+
+        public void setPort(int port) {
+            this.port = port;
+        }
+
+        public String getCollection() {
+            return collection;
+        }
+
+        public void setCollection(String collection) {
+            this.collection = collection;
+        }
+
+        public int getTopK() {
+            return topK;
+        }
+
+        public void setTopK(int topK) {
+            this.topK = topK;
+        }
     }
 
     public static class Storage {
@@ -80,6 +144,69 @@ public class AppProperties {
 
         public void setRetentionHours(int retentionHours) {
             this.retentionHours = retentionHours;
+        }
+    }
+
+    /**
+     * 对象存储（MinIO / S3 兼容）。
+     * <p>默认关闭：单机运行时媒体、关键帧、报告都落本地磁盘，clone 下来就能跑。
+     * 开启后同一套接口写到桶里，容器部署时多个副本共享同一份素材。
+     */
+    public static class ObjectStorage {
+        private boolean enabled = false;
+        private String endpoint = "http://127.0.0.1:9000";
+        private String accessKey = "minioadmin";
+        private String secretKey = "minioadmin";
+        private String bucket = "video-studio";
+        /** 浏览器直连桶的地址前缀；为空表示仍由本服务代理转发 */
+        private String publicBaseUrl = "";
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public String getEndpoint() {
+            return endpoint;
+        }
+
+        public void setEndpoint(String endpoint) {
+            this.endpoint = endpoint;
+        }
+
+        public String getAccessKey() {
+            return accessKey;
+        }
+
+        public void setAccessKey(String accessKey) {
+            this.accessKey = accessKey;
+        }
+
+        public String getSecretKey() {
+            return secretKey;
+        }
+
+        public void setSecretKey(String secretKey) {
+            this.secretKey = secretKey;
+        }
+
+        public String getBucket() {
+            return bucket;
+        }
+
+        public void setBucket(String bucket) {
+            this.bucket = bucket;
+        }
+
+        public String getPublicBaseUrl() {
+            return publicBaseUrl;
+        }
+
+        public void setPublicBaseUrl(String publicBaseUrl) {
+            this.publicBaseUrl = publicBaseUrl;
         }
     }
 

@@ -7,6 +7,7 @@ import com.videostudio.domain.TranscriptSegment;
 import com.videostudio.domain.VisualEvidence;
 import com.videostudio.repository.ChunkRepository;
 import com.videostudio.repository.JobRepository;
+import com.videostudio.repository.ReportRepository;
 import com.videostudio.repository.TranscriptRepository;
 import com.videostudio.repository.VisualRepository;
 import org.slf4j.Logger;
@@ -35,15 +36,17 @@ public class EvidenceService {
     private final TranscriptRepository transcriptRepository;
     private final VisualRepository visualRepository;
     private final ChunkRepository chunkRepository;
+    private final ReportRepository reportRepository;
     private final AppProperties props;
 
     public EvidenceService(JobRepository jobRepository, TranscriptRepository transcriptRepository,
                            VisualRepository visualRepository, ChunkRepository chunkRepository,
-                           AppProperties props) {
+                           ReportRepository reportRepository, AppProperties props) {
         this.jobRepository = jobRepository;
         this.transcriptRepository = transcriptRepository;
         this.visualRepository = visualRepository;
         this.chunkRepository = chunkRepository;
+        this.reportRepository = reportRepository;
         this.props = props;
     }
 
@@ -51,9 +54,9 @@ public class EvidenceService {
      * @param sourceJobId 证据来源任务 id，0 表示没有可复用证据
      */
     public record Reused(long sourceJobId, List<TranscriptSegment> segments, List<VisualEvidence> visuals,
-                         List<ContextChunk> chunks) {
+                         List<ContextChunk> chunks, boolean speakerSeparation) {
         public static Reused none() {
-            return new Reused(0, List.of(), List.of(), List.of());
+            return new Reused(0, List.of(), List.of(), List.of(), false);
         }
 
         public boolean present() {
@@ -87,17 +90,18 @@ public class EvidenceService {
                 if (segments.isEmpty() && visuals.isEmpty()) {
                     continue;
                 }
-                if (needsSpeakers() && lacksSpeakers(segments)) {
-                    // 这份转写是「说话人分离」上线之前生成的，直接复用它会让新能力永远不生效。
-                    // 跳过这一份，让流水线重新跑一次 ASR；跑完的带标签版本会被后续任务复用。
-                    log.info("任务 {} 的转写没有说话人标签，跳过复用（重新识别一次）", candidate.id());
+                boolean marked = speakerSeparationMarked(candidate.id());
+                if (needsSpeakers() && !marked && !segments.isEmpty()) {
+                    // 只有「说话人分离上线之前生成的转写」才需要重跑——否则单人素材会被无限重识别。
+                    // 判据是任务报告里有没有 speakerSeparation 标记，而不是「有没有标签」。
+                    log.info("任务 {} 的转写由未启用说话人分离的版本生成，跳过复用（重新识别一次）", candidate.id());
                     continue;
                 }
                 List<ContextChunk> chunks = chunkRepository.listByJob(candidate.id());
                 log.info("复用素材 {} 的证据：来源任务 {}，转写 {} 段、画面 {} 条、分块 {} 个",
                         assetId, candidate.id(), segments.size(), visuals.size(), chunks.size());
                 return new Reused(candidate.id(), List.copyOf(segments), List.copyOf(visuals),
-                        new ArrayList<>(chunks));
+                        new ArrayList<>(chunks), marked);
             } catch (RuntimeException e) {
                 log.warn("读取任务 {} 的证据失败，尝试下一个候选：{}", candidate.id(), e.getMessage());
             }
@@ -107,6 +111,24 @@ public class EvidenceService {
 
     private boolean needsSpeakers() {
         return props.getMedia().isSpeakerSeparationEnabled();
+    }
+
+    /**
+     * 该任务的报告里没有记录「启用过说话人分离」。
+     * <p>旧任务（本能力上线前跑的）没有这个标记，需要重跑一次；跑完的新任务会带上标记，
+     * 之后即使是单人素材也能正常复用——不能只看「有没有标签」，单人素材本来就不该有标签。
+     */
+    private boolean speakerSeparationMarked(long jobId) {
+        try {
+            return reportRepository.findByJob(jobId)
+                    .map(report -> {
+                        String trace = report.traceJson();
+                        return trace != null && trace.contains("\"speakerSeparation\"");
+                    })
+                    .orElse(false);
+        } catch (RuntimeException e) {
+            return true;
+        }
     }
 
     /**

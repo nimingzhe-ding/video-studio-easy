@@ -107,7 +107,7 @@ public class FollowUpService {
     private String cloudAnswer(AnalysisJob job, String question, List<ChatMessage> history, String report,
                                List<TranscriptSegment> segments, List<VisualEvidence> visuals,
                                List<ContextChunk> chunks) {
-        List<HybridRetriever.Hit> hits = retriever.search(question, chunks, segments, visuals);
+        List<HybridRetriever.Hit> hits = retriever.search(job.id(), question, chunks, segments, visuals);
         List<TranscriptSegment> hitSegments = hits.stream()
                 .flatMap(h -> h.segments().stream())
                 .distinct()
