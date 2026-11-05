@@ -17,7 +17,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
 /**
- * 外部进程执行封装。ffmpeg / ffprobe / OCR / whisper 都是「命令行即接口」，
+ * 外部进程执行封装。ffmpeg / ffprobe / OCR 都是「命令行即接口」，
  * 统一在这里处理超时、编码与日志，避免每个工具各写一份 ProcessBuilder。
  */
 @Component

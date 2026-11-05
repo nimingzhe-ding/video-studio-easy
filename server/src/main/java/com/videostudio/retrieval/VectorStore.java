@@ -5,17 +5,7 @@ import com.videostudio.domain.ContextChunk;
 import java.util.List;
 import java.util.Map;
 
-/**
- * 向量检索的抽象。
- *
- * <p>只负责「给定一个查询向量，返回各分块的语义相似度」这一件事。
- * 关键词与画面文字的命中率仍由 {@link HybridRetriever} 在内存里算——
- * 那部分依赖分词与子串匹配，交给向量库做反而更慢。
- *
- * <p>为什么要有这层抽象：单素材分析时内存暴力扫描完全够用（10 小时的课也只有 120 块），
- * 但只要查询要跨任务（「在我的所有视频里搜这句话」），就必须把候选收敛到 k 条。
- * 抽象出来的成本只有一次方法调用，却让「要不要装 Milvus」变成部署期决定而不是改代码。
- */
+/** Persistent vector retrieval contract. */
 public interface VectorStore {
 
     String provider();
@@ -38,7 +28,7 @@ public interface VectorStore {
 
     void deleteAsset(long assetId);
 
-    /** 把向量转成 float[]：Milvus 只接受 float，转换点集中在实现里 */
+    /** 把向量转成 float[]：浮点向量转换，转换点集中在实现里 */
     static float[] toFloats(List<Double> vector) {
         float[] values = new float[vector.size()];
         for (int i = 0; i < vector.size(); i++) {

@@ -43,9 +43,16 @@ public class ChunkedUploadService {
     private final MediaIngestService ingestService;
     private final Storage storage;
     private final AppProperties props;
+    private final com.videostudio.storage.ObjectStore objects;
+    private final com.videostudio.security.CurrentUser current;
+    private final org.redisson.api.RedissonClient locks;
+    private final org.springframework.transaction.support.TransactionTemplate transactions;
 
     public ChunkedUploadService(UploadSessionRepository repository, MediaIngestService ingestService,
-                                Storage storage, AppProperties props) {
+                                Storage storage, AppProperties props, com.videostudio.storage.ObjectStore objects,
+            com.videostudio.security.CurrentUser current, org.redisson.api.RedissonClient locks, org.springframework.transaction.support.TransactionTemplate transactions) {
+        this.transactions=transactions;
+        this.objects=objects; this.current=current; this.locks=locks;
         this.repository = repository;
         this.ingestService = ingestService;
         this.storage = storage;
@@ -66,7 +73,9 @@ public class ChunkedUploadService {
      * <p>幂等：同一个 uploadId 重复 init（浏览器刷新后重试）不会重置已上传的分片，
      * 客户端拿到 {@code receivedIndexes} 后直接跳过这些片即可。
      */
-    public UploadSession init(String uploadId, String name, long totalBytes) {
+    public UploadSession init(String uploadId, String name, long totalBytes) { return locked(normalise(uploadId),() -> initLocked(uploadId,name,totalBytes)); }
+
+    private UploadSession initLocked(String uploadId, String name, long totalBytes) {
         if (totalBytes <= 0) {
             throw new ApiException("文件大小无效");
         }
@@ -85,8 +94,7 @@ public class ChunkedUploadService {
             UploadSession session = existing.get();
             if (session.totalBytes() != totalBytes) {
                 // 同一个 id 换了文件：直接重置，避免把两个文件的片拼在一起
-                log.warn("uploadId={} 的总大小变化 {}->{}，重置会话", id, session.totalBytes(), totalBytes);
-                clear(id);
+                throw ApiException.conflict("上传信息发生变化，请使用新的上传标识");
             } else {
                 return session;
             }
@@ -102,7 +110,9 @@ public class ChunkedUploadService {
     }
 
     /** 写入一片；重复上传同一片是幂等的，交给前端做重试更简单 */
-    public UploadSession writeChunk(String uploadId, int index, MultipartFile chunk) {
+    public UploadSession writeChunk(String uploadId, int index, MultipartFile chunk) { return locked(normalise(uploadId),() -> writeChunkLocked(uploadId,index,chunk)); }
+
+    private UploadSession writeChunkLocked(String uploadId, int index, MultipartFile chunk) {
         UploadSession session = require(uploadId);
         if (session.finished()) {
             return session;
@@ -122,6 +132,9 @@ public class ChunkedUploadService {
         } catch (IOException e) {
             throw new IllegalStateException("保存分片失败: " + e.getMessage(), e);
         }
+        long expected=Math.min((long)session.chunkSize(),session.totalBytes()-(long)index*session.chunkSize());
+        if(FilesSize(target)!=expected) throw new ApiException("分片大小不符合要求");
+        objects.put(chunkKey(session.uploadId(),index),target,"application/octet-stream");
         repository.recordChunk(session.uploadId(), index, target.toFile().length());
         return repository.find(session.uploadId()).orElse(session);
     }
@@ -131,7 +144,9 @@ public class ChunkedUploadService {
      *
      * <p>缺片时返回 409 并带上缺失序号，前端据此补传，而不是整段重来。
      */
-    public Merged complete(String uploadId) {
+    public Merged complete(String uploadId) { return locked(normalise(uploadId),() -> transactions.execute(status -> completeLocked(uploadId))); }
+
+    private Merged completeLocked(String uploadId) {
         UploadSession session = require(uploadId);
         if (session.finished()) {
             MediaAsset asset = ingestService.findAsset(session.assetId())
@@ -148,7 +163,9 @@ public class ChunkedUploadService {
         try {
             try (OutputStream out = Files.newOutputStream(tmp)) {
                 for (int i = 0; i < session.totalChunks(); i++) {
-                    Files.copy(storage.uploadChunk(session.uploadId(), i), out);
+                    Path part=storage.uploadChunk(session.uploadId(),i);
+                    objects.materialize(chunkKey(session.uploadId(),i),part).orElseThrow(() -> new IllegalStateException("上传分片不存在，请重新上传"));
+                    Files.copy(part,out);
                 }
             }
             long actual = Files.size(tmp);
@@ -163,6 +180,7 @@ public class ChunkedUploadService {
 
         MediaAsset asset = ingestService.ingestFile(assembled, session.name());
         repository.markFinished(session.uploadId(), asset.id());
+        objects.deletePrefix("uploads/"+session.uploadId()+"/");
         // 正式文件已经在 media/{id} 下，整个分片目录都可以回收（会话行保留，用于幂等重试）
         deleteDir(storage.uploadDir(session.uploadId()));
         log.info("分片上传合并完成 uploadId={} assetId={} size={}", session.uploadId(), asset.id(), asset.sizeBytes());
@@ -196,8 +214,11 @@ public class ChunkedUploadService {
     }
 
     /** 取消上传：删会话与分片 */
-    public void cancel(String uploadId) {
+    public void cancel(String uploadId) { locked(normalise(uploadId),() -> { cancelLocked(uploadId); return null; }); }
+
+    private void cancelLocked(String uploadId) {
         String id = normalise(uploadId);
+        objects.deletePrefix("uploads/"+id+"/");
         repository.delete(id);
         deleteDir(storage.uploadDir(id));
         log.info("分片上传已取消 id={}", id);
@@ -214,8 +235,16 @@ public class ChunkedUploadService {
         // 未完成的会话：删除记录与分片
         List<String> stale = repository.stale(before);
         for (String id : stale) {
-            repository.delete(id);
-            deleteDir(storage.uploadDir(id));
+            var lock=locks.getLock("upload:"+id);
+            if(!lock.tryLock()) continue;
+            try {
+                var session=repository.find(id);
+                if(session.isPresent() && !session.get().finished() && session.get().updatedAt().isBefore(before)) {
+                    objects.deletePrefix("uploads/"+id+"/");
+                    repository.delete(id);
+                    deleteDir(storage.uploadDir(id));
+                }
+            } finally { if(lock.isHeldByCurrentThread()) lock.unlock(); }
         }
 
         // 已完成的会话：记录保留（幂等重试时还能查到 assetId），只兜底回收残留目录
@@ -235,6 +264,7 @@ public class ChunkedUploadService {
     }
 
     private void clear(String uploadId) {
+        objects.deletePrefix("uploads/"+uploadId+"/");
         repository.delete(uploadId);
         deleteDir(storage.uploadDir(uploadId));
     }
@@ -266,9 +296,26 @@ public class ChunkedUploadService {
             throw new ApiException("uploadId 不能为空");
         }
         // 与 Storage 的清洗规则保持一致，防止 ../../ 之类的路径穿越
-        return uploadId.trim();
+        String id=uploadId.trim();
+        if(!id.matches("[A-Za-z0-9_-]{1,110}")) throw new ApiException("uploadId 格式无效");
+        String prefix="u"+current.id()+"-";
+        return id.startsWith(prefix)?id:prefix+id;
     }
 
+    private String chunkKey(String id,int index) { return "uploads/"+id+"/"+index; }
+    private long FilesSize(Path file) {
+        try { return Files.size(file); } catch(IOException ex) { throw new IllegalStateException("读取分片失败",ex); }
+    }
+    private <T> T locked(String id,java.util.function.Supplier<T> action) {
+        var lock=locks.getLock("upload:"+id);
+        boolean acquired=false;
+        try {
+            acquired=lock.tryLock(0,java.util.concurrent.TimeUnit.SECONDS);
+            if(!acquired) throw ApiException.conflict("该上传正在处理，请稍后重试");
+            return action.get();
+        } catch(InterruptedException ex) { Thread.currentThread().interrupt(); throw ApiException.conflict("上传被中断"); }
+        finally { if(acquired) lock.unlock(); }
+    }
     private String safeName(String name) {
         if (name == null || name.isBlank()) {
             return "upload.bin";

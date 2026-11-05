@@ -21,7 +21,7 @@ public final class Http {
 
     private static final HttpClient CLIENT = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(30))
-            .followRedirects(HttpClient.Redirect.NORMAL)
+            .followRedirects(HttpClient.Redirect.NEVER)
             .build();
 
     private Http() {
@@ -40,6 +40,13 @@ public final class Http {
                 .POST(HttpRequest.BodyPublishers.ofString(json, StandardCharsets.UTF_8));
         headers.forEach(builder::header);
         return send(builder.build(), timeout);
+    }
+
+    public static Response json(String method,String url,Map<String,String> headers,String json,Duration timeout) {
+        var builder=HttpRequest.newBuilder(URI.create(url)).timeout(timeout).header("Content-Type","application/json")
+            .method(method,HttpRequest.BodyPublishers.ofString(json,StandardCharsets.UTF_8));
+        headers.forEach(builder::header);
+        return send(builder.build(),timeout);
     }
 
     public static Response get(String url, Map<String, String> headers, Duration timeout) {

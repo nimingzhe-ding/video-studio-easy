@@ -30,7 +30,7 @@ public class AudioExtractor {
         this.props = props;
     }
 
-    /** 抽取为 16k 单声道 wav（whisper 与大多数 ASR 接口的公共格式） */
+    /** 抽取为 16k 单声道 wav（云端 ASR 使用的音频格式） */
     public Path extract(Path source, Path targetWav) {
         try {
             Files.createDirectories(targetWav.getParent());

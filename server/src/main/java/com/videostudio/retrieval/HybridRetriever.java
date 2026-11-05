@@ -52,8 +52,7 @@ public class HybridRetriever {
             return List.of();
         }
         List<String> queryTerms = Texts.keywords(question, 10);
-        List<Double> queryVector = chunks.stream().anyMatch(c -> !c.embedding().isEmpty())
-                ? llm.embed(question) : List.of();
+        List<Double> queryVector = llm.embed(question);
         // 语义分交给向量库（未启用时是内存实现）；拿不到就用 0，纯靠关键词也能出结果
         Map<Integer, Double> semantic = queryVector.isEmpty()
                 ? Map.of()

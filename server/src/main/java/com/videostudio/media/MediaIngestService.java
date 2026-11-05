@@ -53,6 +53,7 @@ public class MediaIngestService {
     }
 
     /** 一次性上传（小文件）：边读边写到媒体目录 */
+    @org.springframework.transaction.annotation.Transactional
     public MediaAsset ingest(MultipartFile file) {
         if (file == null || file.isEmpty()) {
             throw new ApiException("请选择要上传的音视频文件");
@@ -111,7 +112,7 @@ public class MediaIngestService {
 
     /** 回写路径 → 探测 → 回写派生字段，两条入口共用 */
     private MediaAsset finish(long id, String name, Path target) {
-        mediaRepository.updateStoragePath(id, target.toAbsolutePath().toString());
+        mediaRepository.updateStoragePath(id, objects.sourceKey(id,name));
         // 先入库再探测：即使后续分析失败，重新分析的请求也能从桶里拿回源文件
         objects.putSource(id, name, target);
 
@@ -136,8 +137,9 @@ public class MediaIngestService {
             meta.put("probedAt", java.time.Instant.now().toString());
             metaJson = Json.write(meta);
         } catch (RuntimeException e) {
-            log.warn("媒体探测失败 {}: {}", name, e.getMessage());
-            metaJson = Json.write(Map.of("probeError", String.valueOf(e.getMessage())));
+            objects.deleteAsset(id);
+            mediaRepository.delete(id);
+            throw new com.videostudio.common.ApiException("文件无法解析，请确认上传的是有效音视频文件");
         }
 
         mediaRepository.updateDerived(id, durationMs, width, height, fps, videoCodec, audioCodec,
