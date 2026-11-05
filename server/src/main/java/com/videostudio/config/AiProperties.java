@@ -8,8 +8,6 @@ import java.util.Locale;
 @ConfigurationProperties(prefix = "ai")
 public class AiProperties {
 
-    /** auto | cloud | mock */
-    private String mode = "auto";
     private String baseUrl = "https://dashscope.aliyuncs.com/compatible-mode/v1";
     private String apiKey = "";
     private String model = "qwen-plus";
@@ -20,7 +18,6 @@ public class AiProperties {
     private String embeddingApiKey = "";
     private int timeoutSeconds = 180;
     private int maxRetries = 3;
-    private boolean dryRun = false;
     /**
      * 是否允许对关键帧调用视觉模型写描述。
      * <p>默认关闭：视觉模型按帧计费，长视频几百帧全量调用成本不可控，
@@ -32,7 +29,7 @@ public class AiProperties {
 
     /** 是否具备真实调用能力 */
     public boolean cloudEnabled() {
-        return !dryRun && apiKey != null && !apiKey.isBlank() && !"mock".equalsIgnoreCase(mode);
+        return apiKey != null && !apiKey.isBlank();
     }
 
     public boolean visionEnabled() {
@@ -77,16 +74,8 @@ public class AiProperties {
     }
 
     public String describe() {
-        return String.format(Locale.ROOT, "mode=%s cloud=%s model=%s vision=%s embedding=%s",
-                mode, cloudEnabled(), model, visionModel, embeddingModel);
-    }
-
-    public String getMode() {
-        return mode;
-    }
-
-    public void setMode(String mode) {
-        this.mode = mode;
+        return String.format(Locale.ROOT, "cloud=%s model=%s vision=%s embedding=%s",
+                cloudEnabled(), model, visionModel, embeddingModel);
     }
 
     public String getBaseUrl() {
@@ -167,14 +156,6 @@ public class AiProperties {
 
     public void setMaxRetries(int maxRetries) {
         this.maxRetries = maxRetries;
-    }
-
-    public boolean isDryRun() {
-        return dryRun;
-    }
-
-    public void setDryRun(boolean dryRun) {
-        this.dryRun = dryRun;
     }
 
     public boolean isVisionCaptionEnabled() {

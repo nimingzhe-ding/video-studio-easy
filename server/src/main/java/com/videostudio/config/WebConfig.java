@@ -17,19 +17,16 @@ import java.io.File;
 public class WebConfig implements WebMvcConfigurer {
 
     private final AppProperties properties;
+    private final com.videostudio.security.OwnerGuard owner;
 
-    public WebConfig(AppProperties properties) {
+    public WebConfig(AppProperties properties, com.videostudio.security.OwnerGuard owner) {
+        this.owner=owner;
         this.properties = properties;
     }
 
     @Override
-    public void addCorsMappings(CorsRegistry registry) {
-        registry.addMapping("/api/**")
-                .allowedOriginPatterns("http://localhost:*", "http://127.0.0.1:*")
-                .allowedMethods("GET", "POST", "PUT", "DELETE", "OPTIONS")
-                .allowedHeaders("*")
-                .allowCredentials(false)
-                .maxAge(3600);
+    public void addInterceptors(org.springframework.web.servlet.config.annotation.InterceptorRegistry registry) {
+        registry.addInterceptor(owner).addPathPatterns("/api/**");
     }
 
     @Override

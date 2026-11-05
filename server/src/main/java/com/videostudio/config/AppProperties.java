@@ -14,7 +14,6 @@ public class AppProperties {
     private final Media media = new Media();
     private final Upload upload = new Upload();
     private final ObjectStorage objectStorage = new ObjectStorage();
-    private final Vector vector = new Vector();
     private final Redis redis = new Redis();
 
     public Storage getStorage() {
@@ -33,35 +32,19 @@ public class AppProperties {
         return objectStorage;
     }
 
-    public Vector getVector() {
-        return vector;
-    }
 
     public Redis getRedis() {
         return redis;
     }
 
-    /**
-     * Redis 的开关与策略。
-     * <p>默认关闭；关闭时所有依赖它的能力（分布式锁、跨实例事件广播、配额计数）
-     * 都会退化成进程内实现，单机体验完全一致，也不会因为没装 Redis 起不来。
-     */
+    /** Required Redis coordination settings. */
     public static class Redis {
-        private boolean enabled = false;
         /** 锁的持有时间上限：超过即认为持有者已经挂了，避免死锁 */
         private long lockTtlSeconds = 30;
         /** 拿不到锁时最多等多久，等不到就返回 409，而不是无限阻塞 Tomcat 线程 */
         private long lockWaitMillis = 800;
         /** 事件广播保留多久，用于后端实例短暂抖动期间补读 */
         private long eventTtlMinutes = 30;
-
-        public boolean isEnabled() {
-            return enabled;
-        }
-
-        public void setEnabled(boolean enabled) {
-            this.enabled = enabled;
-        }
 
         public long getLockTtlSeconds() {
             return lockTtlSeconds;
@@ -88,63 +71,9 @@ public class AppProperties {
         }
     }
 
-    /**
-     * 向量库（Milvus）。
-     * <p>默认关闭，检索走内存里的余弦暴力扫描——单素材只有几十到几百个分块，够用且零依赖。
-     * 开启后语义相似度改由 Milvus 计算；连不上时会自动回落，不让分析失败。
-     */
-    public static class Vector {
-        private boolean enabled = false;
-        private String host = "127.0.0.1";
-        private int port = 19530;
-        private String collection = "video_studio_chunks";
-        /** 查询时返回的候选数；太小会把相关分块挤掉，太大又失去向量库的意义 */
-        private int topK = 20;
-
-        public boolean isEnabled() {
-            return enabled;
-        }
-
-        public void setEnabled(boolean enabled) {
-            this.enabled = enabled;
-        }
-
-        public String getHost() {
-            return host;
-        }
-
-        public void setHost(String host) {
-            this.host = host;
-        }
-
-        public int getPort() {
-            return port;
-        }
-
-        public void setPort(int port) {
-            this.port = port;
-        }
-
-        public String getCollection() {
-            return collection;
-        }
-
-        public void setCollection(String collection) {
-            this.collection = collection;
-        }
-
-        public int getTopK() {
-            return topK;
-        }
-
-        public void setTopK(int topK) {
-            this.topK = topK;
-        }
-    }
-
     public static class Storage {
         /** 运行期数据根目录 */
-        private String root = "./data";
+        private String root = System.getProperty("java.io.tmpdir") + "/video-studio";
         private long maxUploadBytes = 2L * 1024 * 1024 * 1024;
 
         public String getRoot() {
@@ -205,21 +134,12 @@ public class AppProperties {
      * 开启后同一套接口写到桶里，容器部署时多个副本共享同一份素材。
      */
     public static class ObjectStorage {
-        private boolean enabled = false;
         private String endpoint = "http://127.0.0.1:9000";
         private String accessKey = "minioadmin";
         private String secretKey = "minioadmin";
         private String bucket = "video-studio";
         /** 浏览器直连桶的地址前缀；为空表示仍由本服务代理转发 */
         private String publicBaseUrl = "";
-
-        public boolean isEnabled() {
-            return enabled;
-        }
-
-        public void setEnabled(boolean enabled) {
-            this.enabled = enabled;
-        }
 
         public String getEndpoint() {
             return endpoint;
@@ -275,7 +195,7 @@ public class AppProperties {
         private int frameWidth = 960;
         private int asrSegmentSeconds = 60;
         private int segmentSeconds = 60;
-        /** ASR 分片并发度（云端优先，本地 whisper 受 CPU 限制，建议不超过核数的一半） */
+        /** ASR 分片并发度（由云端接口的 QPS 配额决定） */
         private int asrConcurrency = 3;
         /** 关键帧 OCR 并发度（Vision / tesseract 都可并行，建议 2-4） */
         private int ocrConcurrency = 3;

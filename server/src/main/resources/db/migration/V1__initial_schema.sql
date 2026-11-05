@@ -1,9 +1,4 @@
--- video-studio-easy schema
---
--- 这份 DDL 只写 MySQL 方言（LONGTEXT / DATETIME(3) / ENGINE=InnoDB / KEY 索引），
--- 本地 H2 用 MODE=MySQL 也能完整执行（已验证 10 张表 + 索引 + 自增主键一致）。
--- 保持单一方言而不是两套脚本，是因为两边一旦分叉，容器里才暴露的字段差异最难查。
-
+-- MySQL initial schema. Managed exclusively by Flyway.
 CREATE TABLE IF NOT EXISTS media_asset (
     id            BIGINT AUTO_INCREMENT PRIMARY KEY,
     name          VARCHAR(512)  NOT NULL,
