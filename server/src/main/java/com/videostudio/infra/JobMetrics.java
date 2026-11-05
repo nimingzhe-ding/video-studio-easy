@@ -14,7 +14,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * 指标中心：把「跑得快不快、花了多少钱、降级了几次」变成可采集的数字。
+ * 指标中心：把任务耗时、模型用量与失败率变成可采集的数字。
  * <p>指标名遵循 Prometheus 约定（下划线、单位后缀），因此可以直接被
  * Grafana / Alertmanager 消费，而不需要额外写转换规则。
  */
@@ -27,9 +27,11 @@ public class JobMetrics {
     private final AtomicInteger active = new AtomicInteger();
     /** 因超过预算被终止的任务数 */
     private final AtomicLong overBudget = new AtomicLong();
-    /** 中间件不可用导致的降级次数（Redis / Milvus / MinIO） */
-    private final Map<String, AtomicInteger> fallbacks = new ConcurrentHashMap<>();
     private final Map<String, AtomicLong> llmTokens = new ConcurrentHashMap<>();
+    /** 发件箱积压：投递器每轮刷新一次，供 Prometheus 抓取 */
+    private final AtomicLong outboxPending = new AtomicLong();
+    private final AtomicLong outboxOldestAge = new AtomicLong();
+    private final AtomicLong failedDelivery = new AtomicLong();
 
     public JobMetrics(MeterRegistry registry) {
         this.registry = registry;
@@ -39,6 +41,31 @@ public class JobMetrics {
         Gauge.builder("videostudio_jobs_over_budget", overBudget, AtomicLong::get)
                 .description("因超过成本预算而终止的任务数")
                 .register(registry);
+        Gauge.builder("videostudio_outbox_pending", outboxPending, AtomicLong::get)
+                .description("尚未被 Broker 确认的发件箱记录数")
+                .register(registry);
+        Gauge.builder("videostudio_outbox_oldest_age_seconds", outboxOldestAge, AtomicLong::get)
+                .description("最老的未投递发件箱记录年龄，积压告警用它")
+                .register(registry);
+        Gauge.builder("videostudio_failed_delivery_total", failedDelivery, AtomicLong::get)
+                .description("重试耗尽后写入死信记录的任务数")
+                .register(registry);
+    }
+
+    /** 刷新发件箱积压指标。参数由投递器在每轮扫描时用一条聚合查询算出 */
+    public void outbox(long pending, long oldestAgeSeconds, long failed) {
+        outboxPending.set(pending);
+        outboxOldestAge.set(oldestAgeSeconds);
+        failedDelivery.set(failed);
+    }
+
+    /** 记录一次任务重新排队；reason=stale 表示执行者失联，gave_up 表示放弃自动重跑 */
+    public void jobRequeued(String reason) {
+        Counter.builder("videostudio_jobs_requeued_total")
+                .description("被重新排队的任务数")
+                .tag("reason", reason)
+                .register(registry)
+                .increment();
     }
 
     public void jobStarted(String mode) {
@@ -102,15 +129,6 @@ public class JobMetrics {
                 .increment();
     }
 
-    public void fallback(String component, String reason) {
-        fallbacks.computeIfAbsent(component, key -> new AtomicInteger()).incrementAndGet();
-        Counter.builder("videostudio_fallback_total")
-                .description("中间件不可用时的降级次数")
-                .tag("component", component)
-                .tag("reason", reason)
-                .register(registry)
-                .increment();
-    }
 
     public void markOverBudget() {
         overBudget.incrementAndGet();

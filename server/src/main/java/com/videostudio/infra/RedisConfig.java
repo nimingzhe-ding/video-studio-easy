@@ -15,7 +15,6 @@ import org.springframework.data.redis.listener.RedisMessageListenerContainer;
 public class RedisConfig {
 
     @Bean
-    @ConditionalOnProperty(name = "app.redis.enabled", havingValue = "true")
     public RedisMessageListenerContainer redisMessageListenerContainer(RedisConnectionFactory factory) {
         RedisMessageListenerContainer container = new RedisMessageListenerContainer();
         container.setConnectionFactory(factory);

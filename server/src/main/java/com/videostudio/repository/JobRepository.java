@@ -35,8 +35,10 @@ public class JobRepository {
             Sql.instant(rs.getTimestamp("finished_at")));
 
     private final JdbcTemplate jdbc;
+    private final com.videostudio.security.CurrentUser current;
 
-    public JobRepository(JdbcTemplate jdbc) {
+    public JobRepository(JdbcTemplate jdbc, com.videostudio.security.CurrentUser current) {
+        this.current=current;
         this.jdbc = jdbc;
     }
 
@@ -57,7 +59,7 @@ public class JobRepository {
     }
 
     public List<AnalysisJob> list(int limit) {
-        return jdbc.query("SELECT * FROM analysis_job ORDER BY id DESC LIMIT ?", ROW, limit);
+        return jdbc.query("SELECT j.* FROM analysis_job j JOIN media_asset m ON m.id=j.asset_id WHERE m.owner_id=? ORDER BY j.id DESC LIMIT ?", ROW, current.id(), limit);
     }
 
     public List<AnalysisJob> listByAsset(long assetId) {
@@ -72,40 +74,22 @@ public class JobRepository {
     }
 
     public void markRunning(long id) {
-        jdbc.update("UPDATE analysis_job SET status = ?, updated_at = ? WHERE id = ?",
+        jdbc.update("UPDATE analysis_job SET status = ?, updated_at = ? WHERE id = ? AND status IN ('PENDING','RUNNING','FAILED')",
                 JobStatus.RUNNING.name(), Sql.now(), id);
     }
 
-    public void markSucceeded(long id) {
-        jdbc.update("""
+    public boolean markSucceeded(long id) {
+        return jdbc.update("""
                 UPDATE analysis_job SET status = ?, stage = ?, progress = 100, updated_at = ?, finished_at = ?
-                WHERE id = ?
-                """, JobStatus.SUCCEEDED.name(), JobStage.DONE.name(), Sql.now(), Sql.now(), id);
+                WHERE id = ? AND status = 'RUNNING'
+                """, JobStatus.SUCCEEDED.name(), JobStage.DONE.name(), Sql.now(), Sql.now(), id) == 1;
     }
 
     public void markFailed(long id, String error) {
         jdbc.update("""
                 UPDATE analysis_job SET status = ?, stage = ?, error = ?, updated_at = ?, finished_at = ?
-                WHERE id = ?
+                WHERE id = ? AND status NOT IN ('CANCELED','SUCCEEDED')
                 """, JobStatus.FAILED.name(), JobStage.FAILED.name(), error, Sql.now(), Sql.now(), id);
-    }
-
-    /**
-     * 把失败/取消的任务放回队列。
-     * <p>故意不清空 stage 与 progress：前端能看到「上次跑到哪一步」，
-     * 重试时也会从那里继续（证据复用会跳过已完成的转写与抽帧）。
-     */
-    public void retry(long id) {
-        jdbc.update("""
-                UPDATE analysis_job SET status = ?, error = NULL, updated_at = ?, finished_at = NULL
-                WHERE id = ?
-                """, JobStatus.PENDING.name(), Sql.now(), id);
-    }
-
-    public void markCanceled(long id) {
-        jdbc.update("""
-                UPDATE analysis_job SET status = ?, updated_at = ?, finished_at = ? WHERE id = ?
-                """, JobStatus.CANCELED.name(), Sql.now(), Sql.now(), id);
     }
 
     public void addNotice(long id, String notice) {
@@ -115,16 +99,8 @@ public class JobRepository {
         List<String> rows = jdbc.queryForList("SELECT notices FROM analysis_job WHERE id = ?", String.class, id);
         String existing = rows.isEmpty() ? null : rows.get(0);
         String merged = existing == null || existing.isBlank() ? notice : existing + "\n" + notice;
-        jdbc.update("UPDATE analysis_job SET degraded = TRUE, notices = ?, updated_at = ? WHERE id = ?",
+        jdbc.update("UPDATE analysis_job SET notices = ?, updated_at = ? WHERE id = ?",
                 merged, Sql.now(), id);
-    }
-
-    /** 启动时把上次进程遗留的 RUNNING 任务标记为失败，避免前端永远等待 */
-    public int failZombies(String reason) {
-        return jdbc.update("""
-                UPDATE analysis_job SET status = ?, stage = ?, error = ?, updated_at = ?, finished_at = ?
-                WHERE status IN ('PENDING','RUNNING')
-                """, JobStatus.FAILED.name(), JobStage.FAILED.name(), reason, Sql.now(), Sql.now());
     }
 
     public void delete(long id) {

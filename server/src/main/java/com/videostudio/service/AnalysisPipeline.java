@@ -173,7 +173,11 @@ public class AnalysisPipeline {
             };
         }
 
-        void emit(JobStage stage, String type, String level, int progress, String message) {
+        synchronized void emit(JobStage stage, String type, String level, int progress, String message) {
+            if(stage!=JobStage.FAILED && stage!=JobStage.DONE &&
+                jobRepository.find(jobId).map(j -> j.status()==com.videostudio.domain.JobStatus.CANCELED).orElse(true)) {
+                throw new java.util.concurrent.CancellationException("任务已取消");
+            }
             long next = seq.incrementAndGet();
             JobEvent event = new JobEvent(0, stage, type, level, progress, message, null, java.time.Instant.now());
             eventRepository.append(jobId, next, event);
@@ -189,12 +193,8 @@ public class AnalysisPipeline {
                 metrics.stage(current.name().toLowerCase(java.util.Locale.ROOT),
                         java.time.Duration.between(stageStarted, now));
                 // 进入新阶段说明上一阶段已经做完，这里落一次断点。
-                // 写失败只记日志：断点是「加速手段」，不能因为存储抖动把正常分析搞挂。
-                try {
-                    checkpoints.save(jobId, current, null, attempts);
-                } catch (RuntimeException e) {
-                    log.debug("写入断点失败 job={} stage={}: {}", jobId, current, e.getMessage());
-                }
+                // 断点写入失败时停止，保留可恢复的任务状态。
+                checkpoints.save(jobId,current,null,attempts);
             }
             stageStarted = now;
             current = stage;
@@ -214,14 +214,7 @@ public class AnalysisPipeline {
                 .orElseThrow(() -> new IllegalStateException("任务不存在: " + jobId));
         MediaAsset asset = mediaRepository.find(job.assetId())
                 .orElseThrow(() -> new IllegalStateException("媒体不存在: " + job.assetId()));
-        Path source = Path.of(asset.storagePath());
-        // 多副本部署时源文件可能只存在于对象存储里，先从桶里拉一份本地副本
-        if (objects.enabled() && !Files.isReadable(source)) {
-            Path pulled = objects.ensureSource(asset.id(), asset.name(), source);
-            if (pulled != null) {
-                source = pulled;
-            }
-        }
+        Path source = objects.ensureSource(asset.id(),asset.name(),storage.sourceFile(asset.id(),asset.name()));
         Run run = new Run(job, asset, source);
         java.time.Instant started = java.time.Instant.now();
         metrics.jobStarted(job.mode().name());
@@ -233,21 +226,18 @@ public class AnalysisPipeline {
         try {
             jobRepository.markRunning(jobId);
             execute(run, job, asset, source);
-            jobRepository.markSucceeded(jobId);
+            if(!jobRepository.markSucceeded(jobId)) throw new java.util.concurrent.CancellationException("任务已取消");
             run.emit(JobStage.DONE, JobEvent.TYPE_DONE, "info", 100, "分析完成");
             // DONE 是终态，不走 stage()，所以断点要在这里显式落一次；
             // 否则断点会永远停在最后一个真实阶段，重试时白跑一遍报告
-            try {
-                checkpoints.save(jobId, JobStage.DONE, null, run.attempts);
-            } catch (RuntimeException e) {
-                log.debug("写入完成断点失败 job={}: {}", jobId, e.getMessage());
-            }
+            checkpoints.save(jobId,JobStage.DONE,null,run.attempts);
             status = "succeeded";
         } catch (Exception e) {
             log.error("任务 {} 失败", jobId, e);
             String message = Texts.oneLine(e.getMessage() == null ? e.toString() : e.getMessage(), 300);
             jobRepository.markFailed(jobId, message);
             run.emit(JobStage.FAILED, JobEvent.TYPE_ERROR, "error", 100, "分析失败：" + message);
+            throw new IllegalStateException(message,e);
         } finally {
             // 顺序很重要：先结算阶段耗时，再清上下文，最后回收记账
             if (run.stageStarted != null) {
@@ -416,24 +406,8 @@ public class AnalysisPipeline {
 
         Path docx = storage.reportDocx(asset.id(), run.jobId);
         List<DocxExporter.Figure> figures = reportFigures(draft, visuals);
-        try {
-            docxExporter.export(markdown, docx, figures);
-            objects.putReport(asset.id(), run.jobId, docx);
-        } catch (Exception e) {
-            run.warn("生成 Word 文档失败：" + Texts.oneLine(e.getMessage(), 120));
-            docx = null;
-        }
-        // 关键帧只上传真正进了证据集、且被报告插图用到的那些，避免把抽帧中间产物全搬上去
-        if (objects.enabled() && !visuals.isEmpty()) {
-            List<Path> frames = visuals.stream()
-                    .map(VisualEvidence::framePath)
-                    .filter(p -> !Texts.isBlank(p))
-                    .map(Path::of)
-                    .filter(Files::isReadable)
-                    .toList();
-            objects.putFrames(asset.id(), run.jobId, frames);
-        }
-
+        docxExporter.export(markdown,docx,figures);
+        objects.putReport(asset.id(),run.jobId,docx);
         Map<String, Object> trace = new LinkedHashMap<>();
         trace.put("engine", outcome.engine());
         trace.put("asrEngine", asrEngine);
@@ -474,7 +448,7 @@ public class AnalysisPipeline {
 
         reportRepository.insert(new AnalysisReport(0, run.jobId, asset.id(), draft.title(), outcome.mode(),
                 markdown, Json.write(draft.sections()), Json.write(trace),
-                docx == null ? null : docx.toString(), java.time.Instant.now()));
+                objects.reportKey(asset.id(),run.jobId), java.time.Instant.now()));
 
         run.emit(JobStage.REPORT, JobEvent.TYPE_METRIC, "info", JobStage.REPORT.floor(),
                 "报告已生成（%d 字）".formatted(markdown.length()));
@@ -483,14 +457,13 @@ public class AnalysisPipeline {
     private String describeEngine(String asrEngine, int visualCount, int captionedCount) {
         String asr = switch (asrEngine) {
             case "cloud-asr" -> "云端语音识别";
-            case "whisper" -> "本地 whisper.cpp";
             case "none" -> "无语音";
             default -> asrEngine;
         };
         String ocr = visualCount <= 0 ? "无画面文字"
                 : captionedCount > 0 ? "本地 OCR + 视觉描述 %d 帧".formatted(captionedCount)
                 : "本地 OCR";
-        String llm = aiProps.cloudEnabled() ? "大模型 " + aiProps.getModel() : "离线模板";
+        String llm = "大模型 " + aiProps.getModel();
         return "%s + %s + %s".formatted(asr, ocr, llm);
     }
 

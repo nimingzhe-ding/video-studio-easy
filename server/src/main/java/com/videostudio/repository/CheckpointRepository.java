@@ -35,12 +35,11 @@ public class CheckpointRepository {
 
     /**
      * 记录一次完成。
-     * <p>用「先删后插」而不是 MySQL 的 ON DUPLICATE KEY：H2 的 MySQL 兼容模式对后者支持有限，
-     * 而单行覆盖的开销完全可以忽略，换来一份 SQL 在两种库上都能跑。
+     * 使用 MySQL 原子 upsert 保存阶段，避免删除与插入之间的断点丢失。
      */
     public void save(long jobId, JobStage stage, String payloadJson, int attempts) {
-        jdbc.update("DELETE FROM job_checkpoint WHERE job_id = ?", jobId);
-        jdbc.update("INSERT INTO job_checkpoint (job_id, stage, payload_json, attempts) VALUES (?, ?, ?, ?)",
+        jdbc.update("INSERT INTO job_checkpoint (job_id, stage, payload_json, attempts) VALUES (?, ?, ?, ?) "
+                + "ON DUPLICATE KEY UPDATE stage=VALUES(stage),payload_json=VALUES(payload_json),attempts=VALUES(attempts),updated_at=NOW(3)",
                 jobId, stage.name(), payloadJson, attempts);
     }
 
