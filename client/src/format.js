@@ -104,9 +104,7 @@ export const STAGE_LABELS = {
 
 /** 报告 trace 里的引擎标识 → 中文说明 */
 export const ENGINE_LABELS = {
-  'offline-template': '离线模板',
   'cloud-asr': '云端语音识别',
-  whisper: '本地 whisper.cpp',
   'vision-ocr': '本地 OCR',
   tesseract: '本地 tesseract'
 };

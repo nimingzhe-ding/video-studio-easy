@@ -1,4 +1,5 @@
 import { marked } from 'marked';
+import DOMPurify from 'dompurify';
 
 marked.setOptions({ breaks: true, gfm: true });
 
@@ -50,7 +51,10 @@ export function renderMarkdown(markdown) {
     return '';
   }
   const raw = marked.parse(markdown);
-  return decorate(typeof raw === 'string' ? raw : String(raw));
+  return decorate(DOMPurify.sanitize(typeof raw === 'string' ? raw : String(raw), {
+    USE_PROFILES:{html:true}, FORBID_TAGS:['style','iframe','form','input','button','img','audio','video'],
+    FORBID_ATTR:['style']
+  }));
 }
 
 /** 从 Markdown 里抽 h2，用作报告目录 */

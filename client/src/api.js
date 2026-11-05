@@ -1,10 +1,31 @@
 const BASE = '';
+let csrfToken='';
+let csrfFlight=null;
+async function ensureCsrf() {
+  if(csrfToken) return csrfToken;
+  if(!csrfFlight) csrfFlight=fetch('/api/auth/csrf',{credentials:'same-origin'})
+    .then(async response => {
+      if(!response.ok) throw new Error('无法连接工作空间，请稍后重试');
+      const payload=await response.json();
+      csrfToken=payload.data.token;
+      return csrfToken;
+    }).finally(() => { csrfFlight=null; });
+  return csrfFlight;
+}
+function sessionExpired(response,path) {
+  if(response.status===401 && !path.startsWith('/api/auth/')) window.dispatchEvent(new Event('auth-required'));
+}
+
 
 async function request(path, options = {}) {
+  const unsafe=!['GET','HEAD','OPTIONS'].includes((options.method||'GET').toUpperCase());
+  const token=unsafe?await ensureCsrf():null;
   const response = await fetch(BASE + path, {
-    headers: options.body ? { 'Content-Type': 'application/json' } : {},
-    ...options
+    ...options, credentials:'same-origin',
+    headers: { ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+      ...options.headers, ...(token ? {'X-XSRF-TOKEN':token} : {}) }
   });
+  sessionExpired(response,path);
   const text = await response.text();
   let payload = null;
   try {
@@ -13,7 +34,10 @@ async function request(path, options = {}) {
     throw new Error(`响应不是合法 JSON：${text.slice(0, 120)}`);
   }
   if (!response.ok || (payload && payload.ok === false)) {
-    throw new Error((payload && payload.message) || `请求失败（${response.status}）`);
+    const error=new Error((payload && payload.message) || '请求失败（'+response.status+'）');
+    error.status=response.status;
+    if(response.status===403) csrfToken='';
+    throw error;
   }
   return payload ? payload.data : null;
 }
@@ -31,6 +55,8 @@ async function putChunk(uploadId, index, blob, signal) {
   const response = await fetch(`${BASE}/api/uploads/${encodeURIComponent(uploadId)}/chunks/${index}`, {
     method: 'PUT',
     body: form,
+    credentials: 'same-origin',
+    headers: {'X-XSRF-TOKEN':await ensureCsrf()},
     signal
   });
   const text = await response.text();
@@ -65,6 +91,11 @@ export function chunkUploadId(file) {
 export const CHUNK_THRESHOLD = 32 * 1024 * 1024;
 
 export const api = {
+  async csrf() { csrfToken=''; const info=await request('/api/auth/csrf'); csrfToken=info.token; return info; },
+  me: () => request('/api/auth/me'),
+  login: (body) => request('/api/auth/login',json(body)),
+  register: (body) => request('/api/auth/register',json(body)),
+  logout: () => request('/api/auth/logout',{method:'POST'}),
   runtime: () => request('/api/jobs/runtime'),
 
   listMedia: (limit = 50) => request(`/api/media?limit=${limit}`),
@@ -97,7 +128,11 @@ export const api = {
         }
       };
       xhr.onerror = () => reject(new Error('上传中断，请检查后端是否在线'));
-      xhr.send(form);
+      ensureCsrf().then(token => {
+        xhr.withCredentials=true;
+        xhr.setRequestHeader('X-XSRF-TOKEN',token);
+        xhr.send(form);
+      }).catch(reject);
     });
   },
 
@@ -169,6 +204,7 @@ export const api = {
   submitJob: (payload) => request('/api/jobs', json(payload)),
   jobDetail: (id) => request(`/api/jobs/${id}`),
   jobEvents: (id, after = 0) => request(`/api/jobs/${id}/events?after=${after}`),
+  retryJob: (id) => request('/api/jobs/'+id+'/retry',{method:'POST'}),
   cancelJob: (id) => request(`/api/jobs/${id}/cancel`, { method: 'POST' }),
   deleteJob: (id) => request(`/api/jobs/${id}`, { method: 'DELETE' }),
   reanalyze: (id, payload) => request(`/api/jobs/${id}/reanalyze`, json(payload)),

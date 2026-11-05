@@ -19,6 +19,8 @@ import TranscriptView from './components/TranscriptView.vue';
 
 const media = ref([]);
 const jobs = ref([]);
+const props=defineProps({account:{type:Object,required:true}});
+const emit=defineEmits(['logout']);
 const runtime = ref({});
 const selected = ref(null);
 const activeAssetId = ref(null);
@@ -441,6 +443,10 @@ function notify(message, type = 'ok') {
 function toggleTheme() {
   theme.value = theme.value === 'dark' ? 'light' : 'dark';
 }
+async function retryCurrentJob() {
+  try { const updated=await api.retryJob(job.value.id); await refreshAll(); await open(updated); }
+  catch(e) { notify(e.message); }
+}
 </script>
 
 <template>
@@ -469,14 +475,15 @@ function toggleTheme() {
       <div class="topbar-spacer" />
 
       <div class="topbar-chips">
+        <button class="ghost" @click="emit('logout')" :aria-label="'退出账户 '+props.account.username">{{ props.account.username }} · 退出</button>
         <span
           class="status-pill"
           :class="runtime.aiEnabled ? 'on' : 'off'"
-          :title="runtime.aiEnabled ? '已连接大模型' : '未配置 AI_API_KEY，报告与追问使用离线模板'"
+          :title="runtime.aiEnabled ? '分析模型已配置' : '模型服务不可用，请联系管理员'"
         >
           <span class="led" />
           <span class="key">MODEL</span>
-          <span class="val">{{ runtime.aiEnabled ? runtime.model || '已连接' : '离线' }}</span>
+          <span class="val">{{ runtime.aiEnabled ? runtime.model || '已连接' : '不可用' }}</span>
         </span>
         <span v-if="runningCount" class="status-pill on" title="正在运行的任务数">
           <span class="led" />
@@ -692,16 +699,16 @@ function toggleTheme() {
             <div class="env-row" title="媒体源文件、关键帧与报告会同步到这个对象存储">
               <span class="k">对象存储</span>
               <span class="badge" :class="runtime.objectStorageEnabled ? 'accent' : ''" style="margin-left: auto">
-                {{ runtime.objectStorageEnabled ? runtime.objectStorage || '已启用' : '本地目录' }}
+                {{ runtime.objectStorageEnabled ? runtime.objectStorage || '已连接' : '不可用' }}
               </span>
             </div>
             <div class="env-row" title="语义检索优先走向量库，连不上时自动退回内存余弦与关键词">
               <span class="k">向量检索</span>
               <span class="badge" :class="runtime.vectorStoreEnabled ? 'accent' : ''" style="margin-left: auto">
-                {{ runtime.vectorStoreEnabled ? runtime.vectorStore || '已启用' : '内存余弦' }}
+                {{ runtime.vectorStoreEnabled ? runtime.vectorStore || '已连接' : '不可用' }}
               </span>
             </div>
-            <div class="hint">未配置 AI_API_KEY 时，转写、OCR、检索仍可用，报告走离线模板。</div>
+            <div class="hint">模型及存储服务异常时，任务会停止并保留错误信息，可在恢复后重试。</div>
           </div>
         </div>
       </section>
@@ -747,9 +754,7 @@ function toggleTheme() {
                 <dt>模式</dt>
                 <dd>
                   {{ MODE_LABELS[job.mode] || job.mode }}
-                  <span v-if="job.modeSource === 'AUTO' || job.modeSource === 'RULE'" style="color: var(--faint)">
-                    / {{ job.modeSource === 'AUTO' ? '模型判定' : '规则判定' }}
-                  </span>
+                  <span v-if="job.modeSource === 'AUTO'" style="color: var(--faint)"> / 模型判定</span>
                 </dd>
               </div>
               <div v-if="assetName"><dt>素材</dt><dd>{{ assetName }}</dd></div>
@@ -766,11 +771,12 @@ function toggleTheme() {
               <span class="pct mono" style="font-size: 11.5px; color: var(--faint)">{{ progress }}%</span>
             </div>
             <div v-else-if="job.error" class="notice err" style="margin-top: 12px">{{ job.error }}</div>
-            <div v-if="job.degraded" class="notice warn" style="margin-top: 10px">
-              {{ job.notices || '该任务有部分降级处理，请注意核对证据。' }}
+            <div v-if="job.notices" class="notice warn" style="margin-top: 10px">
+              {{ job.notices || '任务提示' }}
             </div>
 
             <div class="dossier-actions">
+              <button v-if="['FAILED','CANCELED'].includes(job.status)" class="secondary" @click="retryCurrentJob">重试任务</button>
               <button class="secondary" :disabled="!asset" @click="reanalyze">换个目标重跑</button>
               <button v-if="running" class="ghost" @click="cancelJob(job)">取消</button>
               <div class="grow" />
@@ -820,7 +826,7 @@ function toggleTheme() {
           </div>
 
           <div v-show="tab === 'chat'" class="sheet">
-            <ChatPanel :job-id="job.id" :ai-enabled="!!runtime.aiEnabled" :mode="job.mode" @seek="seek" @notice="notify" />
+            <ChatPanel :job-id="job.id" :mode="job.mode" @seek="seek" @notice="notify" />
           </div>
 
           <div v-show="tab === 'transcript'" class="sheet">

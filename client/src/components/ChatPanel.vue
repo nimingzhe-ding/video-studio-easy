@@ -5,7 +5,6 @@ import { renderMarkdown } from '../markdown';
 
 const props = defineProps({
   jobId: { type: Number, required: true },
-  aiEnabled: { type: Boolean, default: false },
   mode: { type: String, default: 'GENERAL' }
 });
 const emit = defineEmits(['seek', 'notice']);
@@ -134,7 +133,7 @@ function keydown(event) {
       <textarea
         v-model="question"
         rows="1"
-        :placeholder="aiEnabled ? '围绕这份报告继续提问（Enter 发送，Shift+Enter 换行）' : '未配置大模型，将返回带时间戳的检索片段'"
+        :placeholder="'围绕这份报告继续提问（Enter 发送，Shift+Enter 换行）'"
         @keydown="keydown"
       />
       <button class="primary" :disabled="sending || !question.trim()" @click="ask()">发送</button>
