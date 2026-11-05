@@ -138,7 +138,11 @@ function keydown(event) {
         @keydown="keydown"
       />
       <button class="primary" :disabled="sending || !question.trim()" @click="ask()">发送</button>
-      <button class="ghost icon" title="清空对话" @click="clearAll">🗑</button>
+      <button class="ghost icon" title="清空对话" @click="clearAll">
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4">
+          <path d="M3 4.4h10M6.3 4.4V3.1h3.4v1.3M4.3 4.4l.6 8.2a1 1 0 0 0 1 .9h4.2a1 1 0 0 0 1-.9l.6-8.2" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+      </button>
     </div>
   </div>
 </template>

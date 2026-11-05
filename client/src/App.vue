@@ -46,6 +46,14 @@ const modes = [
   ...Object.entries(MODE_LABELS).map(([value, label]) => ({ value, label }))
 ];
 
+const TABS = [
+  { key: 'report', label: '报告' },
+  { key: 'chat', label: '追问' },
+  { key: 'transcript', label: '转写与画面' },
+  { key: 'log', label: '执行日志' },
+  { key: 'realtime', label: '实时对话' }
+];
+
 const asset = computed(() => {
   const assetId = activeAssetId.value ?? selected.value?.assetId ?? detail.value?.job?.assetId;
   return media.value.find((item) => item.id === assetId) || null;
@@ -57,6 +65,7 @@ const report = computed(() => detail.value?.report || null);
 const running = computed(() => job.value && ['PENDING', 'RUNNING'].includes(job.value.status));
 const progress = computed(() => job.value?.progress ?? 0);
 const stageText = computed(() => STAGE_LABELS[job.value?.stage] || job.value?.stage || '排队');
+const jobCode = computed(() => (job.value ? `NO.${String(job.value.id).padStart(4, '0')}` : ''));
 const jobsOfAsset = computed(() => {
   if (!asset.value) {
     return [];
@@ -79,6 +88,8 @@ const assetNames = computed(() => {
   });
   return map;
 });
+
+const runningCount = computed(() => jobs.value.filter((item) => ['PENDING', 'RUNNING'].includes(item.status)).length);
 
 watch(theme, (value) => {
   document.documentElement.dataset.theme = value;
@@ -250,7 +261,7 @@ async function onFiles(files) {
           signal: controller.signal
         })
       : await api.upload(file, onProgress);
-    notify(`已上传「${asset.name}」，时长 ${formatDuration(asset.durationMs)}`, 'ok');
+    notify(`已收录「${asset.name}」，时长 ${formatDuration(asset.durationMs)}`, 'ok');
     media.value = (await api.listMedia(100)) || [];
     activeAssetId.value = asset.id;
   } catch (e) {
@@ -435,21 +446,51 @@ function toggleTheme() {
 <template>
   <div class="app">
     <header class="topbar">
-      <button class="ghost icon mobile-only" title="切换侧栏" @click="drawer = !drawer">☰</button>
+      <button class="ghost icon mobile-only" title="打开侧栏" @click="drawer = !drawer">
+        <svg width="17" height="17" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M2 4h12M2 8h12M2 12h8" stroke-linecap="round" />
+        </svg>
+      </button>
+
       <div class="brand">
-        <div class="brand-mark">▶</div>
-        <span>Video Studio Easy</span>
-        <span class="brand-sub">长视频 / 长音频理解</span>
+        <div class="brand-mark">
+          <svg width="17" height="17" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.3">
+            <rect x="2.2" y="3.6" width="13.6" height="10.8" rx="1.2" />
+            <path d="M2.4 6.4h13.2M2.4 11.6h13.2" opacity="0.55" />
+            <path d="M7.6 7.6l3.4 2-3.4 2z" fill="currentColor" stroke="none" />
+          </svg>
+        </div>
+        <div class="brand-text">
+          <span class="brand-name">Video Studio</span>
+          <span class="brand-sub">长视频 · 长音频理解</span>
+        </div>
       </div>
+
       <div class="topbar-spacer" />
+
       <div class="topbar-chips">
-        <span class="badge" :class="runtime.aiEnabled ? 'ok' : 'warn'" :title="runtime.aiEnabled ? '' : '未配置 AI_API_KEY，报告与追问使用离线模板'">
-          <span class="dot" />
-          {{ runtime.aiEnabled ? `模型 ${runtime.model}` : '离线模式' }}
+        <span
+          class="status-pill"
+          :class="runtime.aiEnabled ? 'on' : 'off'"
+          :title="runtime.aiEnabled ? '已连接大模型' : '未配置 AI_API_KEY，报告与追问使用离线模板'"
+        >
+          <span class="led" />
+          <span class="key">MODEL</span>
+          <span class="val">{{ runtime.aiEnabled ? runtime.model || '已连接' : '离线' }}</span>
         </span>
-        <span v-if="runtime.realtimeEnabled" class="badge accent"><span class="dot" />实时对话</span>
-        <button class="ghost icon" :title="theme === 'dark' ? '切换到亮色' : '切换到暗色'" @click="toggleTheme">
-          {{ theme === 'dark' ? '☀' : '☾' }}
+        <span v-if="runningCount" class="status-pill on" title="正在运行的任务数">
+          <span class="led" />
+          <span class="key">RUN</span>
+          <span class="val">{{ runningCount }}</span>
+        </span>
+        <button class="ghost icon" :title="theme === 'dark' ? '切换到宣纸（亮色）' : '切换到墨室（暗色）'" @click="toggleTheme">
+          <svg v-if="theme === 'dark'" width="16" height="16" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.35">
+            <circle cx="9" cy="9" r="3.5" />
+            <path d="M9 1.4v1.9M9 14.7v1.9M1.4 9h1.9M14.7 9h1.9M3.6 3.6l1.35 1.35M13.05 13.05l1.35 1.35M14.4 3.6l-1.35 1.35M4.95 13.05L3.6 14.4" stroke-linecap="round" />
+          </svg>
+          <svg v-else width="16" height="16" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.35">
+            <path d="M15.2 11.1A6.6 6.6 0 0 1 6.9 2.8a6.7 6.7 0 1 0 8.3 8.3z" stroke-linejoin="round" />
+          </svg>
         </button>
       </div>
     </header>
@@ -457,13 +498,14 @@ function toggleTheme() {
     <div v-if="drawer" class="scrim" @click="drawer = false" />
 
     <aside class="sidebar" :class="{ open: drawer }">
-      <div class="card">
-        <div class="card-head">
-          <h3>上传素材</h3>
+      <section class="panel">
+        <div class="panel-head">
+          <span class="index">01</span>
+          <h3>投递素材</h3>
           <div class="spacer" />
           <span class="count">视频 / 音频</span>
         </div>
-        <div class="card-body">
+        <div class="panel-body">
           <div
             class="drop"
             :class="{ active: dragging }"
@@ -475,28 +517,33 @@ function toggleTheme() {
             @dragleave.prevent="onDragLeave"
             @drop.prevent="onDrop"
           >
-            <div class="drop-icon">⤒</div>
+            <div class="drop-icon">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4">
+                <path d="M12 15.5V3.8M8.2 7.4 12 3.6l3.8 3.8" stroke-linecap="round" stroke-linejoin="round" />
+                <path d="M3.8 14.6v3.9a1.6 1.6 0 0 0 1.6 1.6h13.2a1.6 1.6 0 0 0 1.6-1.6v-3.9" stroke-linecap="round" />
+              </svg>
+            </div>
             <div class="drop-title">{{ upload.active ? upload.name : '拖入文件或点击选择' }}</div>
             <div class="drop-hint">
               <template v-if="upload.active">
                 {{ upload.chunked ? '分片上传' : '直传' }} · {{ formatSize(upload.size) }} ·
                 {{ upload.percent }}%
               </template>
-              <template v-else>支持 mp4 / mov / mkv / mp3 / wav / m4a</template>
+              <template v-else>mp4 / mov / mkv / mp3 / wav / m4a</template>
             </div>
-            <div v-if="upload.active" class="progress" style="margin-top: 10px">
+            <div v-if="upload.active" class="tape" style="margin-top: 10px; width: 100%">
               <i :style="{ width: `${upload.percent}%` }" />
             </div>
           </div>
 
           <div v-if="upload.active && upload.chunked" class="row" style="margin-top: 8px">
-            <span class="hint grow">分片上传支持断点续传，中断后可重新选择同一文件继续</span>
+            <span class="hint grow">分片上传支持断点续传，中断后重新选择同一文件即可继续</span>
             <button class="ghost small" type="button" @click.stop="cancelUpload">取消</button>
           </div>
 
           <div v-if="upload.error" class="notice err" style="margin-top: 8px">
             <span class="grow">{{ upload.error }}</span>
-            <label class="ghost small" style="cursor: pointer">
+            <label class="chip" style="cursor: pointer">
               继续上传
               <input type="file" hidden accept="video/*,audio/*,.mkv,.m4a" @change="resumeUpload" />
             </label>
@@ -514,7 +561,7 @@ function toggleTheme() {
             <option v-for="mode in modes" :key="mode.value" :value="mode.value">{{ mode.label }}</option>
           </select>
 
-          <label class="field">分析重点（可留空）</label>
+          <label class="field">分析重点</label>
           <textarea
             v-model="form.goal"
             rows="2"
@@ -523,27 +570,32 @@ function toggleTheme() {
 
           <button
             class="primary block"
-            style="margin-top: 12px"
+            style="margin-top: 13px"
             :disabled="busy || !asset"
             @click="startAnalysis()"
           >
             {{ asset ? `分析「${asset.name}」` : '请先选择媒体' }}
           </button>
         </div>
-      </div>
+      </section>
 
-      <div class="card">
-        <div class="card-head">
-          <h3>媒体库</h3>
+      <section class="panel">
+        <div class="panel-head">
+          <span class="index">02</span>
+          <h3>素材库</h3>
           <div class="spacer" />
           <span class="count">{{ media.length }}</span>
         </div>
-        <div class="card-body tight">
-          <div class="search" style="margin: 0 0 6px">
+        <div class="panel-body tight">
+          <div class="search" style="margin: 0 3px 7px">
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+              <circle cx="7" cy="7" r="4.3" />
+              <path d="M10.2 10.2 14 14" stroke-linecap="round" />
+            </svg>
             <input v-model="mediaFilter" type="search" placeholder="按文件名搜索" />
           </div>
           <div class="list">
-            <div v-if="!filteredMedia.length" class="empty">还没有素材，先上传一段视频或音频。</div>
+            <div v-if="!filteredMedia.length" class="empty">还没有素材，先投递一段视频或音频。</div>
             <div
               v-for="item in filteredMedia"
               :key="item.id"
@@ -561,7 +613,13 @@ function toggleTheme() {
                 :alt="item.name"
                 loading="lazy"
               />
-              <div v-else class="thumb audio">♪</div>
+              <div v-else class="thumb audio">
+                <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4">
+                  <path d="M5.5 11.6V4.4l6-1.2v7" stroke-linecap="round" stroke-linejoin="round" />
+                  <circle cx="4.1" cy="11.9" r="1.5" />
+                  <circle cx="10.1" cy="10.4" r="1.5" />
+                </svg>
+              </div>
               <div class="item-main">
                 <div class="item-title">{{ item.name }}</div>
                 <div class="item-sub">
@@ -570,20 +628,25 @@ function toggleTheme() {
                 </div>
               </div>
               <div class="item-actions" @click.stop>
-                <button class="ghost icon" title="删除媒体" @click="removeMedia(item)">🗑</button>
+                <button class="ghost icon" title="删除媒体" @click="removeMedia(item)">
+                  <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4">
+                    <path d="M3 4.4h10M6.3 4.4V3.1h3.4v1.3M4.3 4.4l.6 8.2a1 1 0 0 0 1 .9h4.2a1 1 0 0 0 1-.9l.6-8.2" stroke-linecap="round" stroke-linejoin="round" />
+                  </svg>
+                </button>
               </div>
             </div>
           </div>
         </div>
-      </div>
+      </section>
 
-      <div class="card">
-        <div class="card-head">
-          <h3>分析任务</h3>
+      <section class="panel">
+        <div class="panel-head">
+          <span class="index">03</span>
+          <h3>分析卷宗</h3>
           <div class="spacer" />
           <span class="count">{{ jobs.length }}</span>
         </div>
-        <div class="card-body tight">
+        <div class="panel-body tight">
           <div class="list">
             <div v-if="!jobs.length" class="empty">还没有分析任务。</div>
             <JobCard
@@ -598,147 +661,174 @@ function toggleTheme() {
             />
           </div>
         </div>
-      </div>
+      </section>
 
-      <div class="card">
-        <div class="card-head"><h3>运行环境</h3></div>
-        <div class="card-body">
-          <div class="stack small muted">
-            <div class="row"><span>大模型</span><div class="grow" /><span class="mono">{{ runtime.model || '-' }}</span></div>
-            <div class="row"><span>向量模型</span><div class="grow" /><span class="mono">{{ runtime.embeddingModel || '-' }}</span></div>
-            <div class="row">
-              <span>实时对话</span><div class="grow" />
-              <span class="badge" :class="runtime.realtimeEnabled ? 'ok' : ''">{{ runtime.realtimeEnabled ? '可用' : '未配置' }}</span>
+      <section class="panel">
+        <div class="panel-head">
+          <span class="index">04</span>
+          <h3>运行环境</h3>
+        </div>
+        <div class="panel-body">
+          <div class="stack">
+            <div class="env-row"><span class="k">大模型</span><span class="v">{{ runtime.model || '-' }}</span></div>
+            <div class="env-row"><span class="k">向量模型</span><span class="v">{{ runtime.embeddingModel || '-' }}</span></div>
+            <div class="env-row">
+              <span class="k">实时对话</span>
+              <span class="badge" :class="runtime.realtimeEnabled ? 'ok' : ''" style="margin-left: auto">
+                {{ runtime.realtimeEnabled ? '可用' : '未配置' }}
+              </span>
             </div>
-            <div class="row">
-              <span>画面描述</span><div class="grow" />
-              <span class="badge" :class="runtime.visionCaptionEnabled ? 'accent' : ''"
-                    :title="runtime.visionCaptionEnabled ? '会对没有文字的帧调用视觉模型' : '默认关闭，避免按帧计费'">
+            <div class="env-row">
+              <span class="k">画面描述</span>
+              <span
+                class="badge"
+                :class="runtime.visionCaptionEnabled ? 'accent' : ''"
+                style="margin-left: auto"
+                :title="runtime.visionCaptionEnabled ? '会对没有文字的帧调用视觉模型' : '默认关闭，避免按帧计费'"
+              >
                 {{ runtime.visionCaptionEnabled ? '已开启' : '关闭' }}
               </span>
             </div>
-            <div class="row" :title="'媒体源文件、关键帧与报告会同步到这个对象存储'">
-              <span>对象存储</span><div class="grow" />
-              <span class="badge" :class="runtime.objectStorageEnabled ? 'accent' : ''">
-                {{ runtime.objectStorageEnabled ? (runtime.objectStorage || '已启用') : '本地目录' }}
+            <div class="env-row" title="媒体源文件、关键帧与报告会同步到这个对象存储">
+              <span class="k">对象存储</span>
+              <span class="badge" :class="runtime.objectStorageEnabled ? 'accent' : ''" style="margin-left: auto">
+                {{ runtime.objectStorageEnabled ? runtime.objectStorage || '已启用' : '本地目录' }}
               </span>
             </div>
-            <div class="row" :title="'语义检索优先走向量库，连不上时自动退回内存余弦与关键词'">
-              <span>向量检索</span><div class="grow" />
-              <span class="badge" :class="runtime.vectorStoreEnabled ? 'accent' : ''">
-                {{ runtime.vectorStoreEnabled ? (runtime.vectorStore || '已启用') : '内存余弦' }}
+            <div class="env-row" title="语义检索优先走向量库，连不上时自动退回内存余弦与关键词">
+              <span class="k">向量检索</span>
+              <span class="badge" :class="runtime.vectorStoreEnabled ? 'accent' : ''" style="margin-left: auto">
+                {{ runtime.vectorStoreEnabled ? runtime.vectorStore || '已启用' : '内存余弦' }}
               </span>
             </div>
             <div class="hint">未配置 AI_API_KEY 时，转写、OCR、检索仍可用，报告走离线模板。</div>
           </div>
         </div>
-      </div>
+      </section>
     </aside>
 
-    <main class="main">
-      <div class="main-inner">
+    <main class="stage">
+      <div class="stage-inner">
         <div v-if="notice" class="notice" :class="notice.type">{{ notice.message }}</div>
 
-        <div v-if="!job" class="card">
-          <div class="empty" style="padding: 56px 20px">
+        <div v-if="!job" class="panel">
+          <div class="empty" style="padding: 64px 24px">
+            <svg class="enso" viewBox="0 0 100 100" aria-hidden="true">
+              <circle cx="50" cy="50" r="37" />
+            </svg>
             <strong>从一段长视频开始</strong>
-            <span>上传素材 → 选择分析模式 → 得到带时间戳证据的报告，并可以继续追问。</span>
+            <span>投递素材 → 选择分析模式 → 得到每条结论都能点回原片的报告，并可以继续追问。</span>
           </div>
         </div>
 
         <template v-else>
-          <div class="card">
-            <div class="card-body job-header">
-              <div class="job-title-row">
-                <h2 class="job-title">{{ job.title || job.focus || '未命名分析' }}</h2>
-                <span class="badge" :class="job.status === 'SUCCEEDED' ? 'ok' : job.status === 'RUNNING' ? 'warn' : job.status === 'FAILED' || job.status === 'CANCELED' ? 'err' : ''">
-                  <span class="dot" :class="{ pulse: running }" />
-                  {{ STATUS_LABELS[job.status] || job.status }}
-                </span>
-              </div>
-
-              <div class="job-meta">
-                <span>
-                  {{ MODE_LABELS[job.mode] || job.mode }}
-                  <span v-if="job.modeSource === 'AUTO' || job.modeSource === 'RULE'" class="muted small">
-                    · {{ job.modeSource === 'AUTO' ? '模型判定' : '规则判定' }}
-                  </span>
-                </span>
-                <span v-if="assetName">素材 {{ assetName }}</span>
-                <span v-if="asset">时长 {{ formatDuration(asset.durationMs) }}</span>
-                <span>创建 {{ formatDateTime(job.createdAt) }}</span>
-                <span v-if="job.finishedAt">完成 {{ formatRelative(job.finishedAt) }}</span>
-              </div>
-
-              <div v-if="job.focus" class="hint">目标：{{ job.focus }}</div>
-              <div v-if="job.modeReason" class="hint muted">模式判定：{{ job.modeReason }}</div>
-
-              <template v-if="running">
-                <div class="stage-row">
-                  <span>{{ stageText }}</span>
-                  <div class="progress thin grow"><i :style="{ width: `${progress}%` }" /></div>
-                  <span class="pct">{{ progress }}%</span>
+          <section class="dossier">
+            <div class="dossier-top">
+              <div style="min-width: 0; flex: 1">
+                <div class="job-code">
+                  <span>档案</span>
+                  <b>{{ jobCode }}</b>
+                  <span>·</span>
+                  <span>{{ formatDateTime(job.createdAt) }}</span>
                 </div>
-              </template>
-              <div v-else-if="job.error" class="notice err">{{ job.error }}</div>
-              <div v-if="job.degraded" class="notice warn">{{ job.notices || '该任务有部分降级处理，请注意核对证据。' }}</div>
-
-              <div class="row wrap">
-                <button class="secondary" :disabled="!asset" @click="reanalyze">换个目标重跑</button>
-                <button v-if="running" class="ghost" @click="cancelJob(job)">取消</button>
-                <div class="grow" />
-                <span class="hint">重跑会复用已提取的语音与画面证据，只重新检索、分析与生成报告。</span>
+                <h2 class="dossier-title">{{ job.title || job.focus || '未命名分析' }}</h2>
               </div>
+              <span
+                class="badge"
+                :class="job.status === 'SUCCEEDED' ? 'ok' : job.status === 'RUNNING' ? 'warn' : job.status === 'FAILED' || job.status === 'CANCELED' ? 'err' : ''"
+              >
+                <span class="dot" :class="{ pulse: running }" />
+                {{ STATUS_LABELS[job.status] || job.status }}
+              </span>
             </div>
 
-            <div v-if="asset && job.status === 'SUCCEEDED'" class="player">
-              <div class="player-head">
-                <span>{{ asset.kind === 'VIDEO' ? '原片回放' : '音频回放' }}</span>
-                <div class="grow" />
-                <span class="hint">点击报告里的 [mm:ss] 可跳到对应位置</span>
+            <dl class="meta-ledger">
+              <div>
+                <dt>模式</dt>
+                <dd>
+                  {{ MODE_LABELS[job.mode] || job.mode }}
+                  <span v-if="job.modeSource === 'AUTO' || job.modeSource === 'RULE'" style="color: var(--faint)">
+                    / {{ job.modeSource === 'AUTO' ? '模型判定' : '规则判定' }}
+                  </span>
+                </dd>
               </div>
-              <video
-                v-if="asset.kind === 'VIDEO'"
-                ref="player"
-                :src="api.streamUrl(asset.id)"
-                :poster="api.thumbnailUrl(asset.id, 1)"
-                controls
-                preload="metadata"
-              />
-              <audio v-else ref="player" :src="api.streamUrl(asset.id)" controls preload="metadata" />
+              <div v-if="assetName"><dt>素材</dt><dd>{{ assetName }}</dd></div>
+              <div v-if="asset"><dt>时长</dt><dd>{{ formatDuration(asset.durationMs) }}</dd></div>
+              <div v-if="job.finishedAt"><dt>完成</dt><dd>{{ formatRelative(job.finishedAt) }}</dd></div>
+            </dl>
+
+            <div v-if="job.focus" class="dossier-note">目标 · {{ job.focus }}</div>
+            <div v-if="job.modeReason" class="dossier-note muted">判定 · {{ job.modeReason }}</div>
+
+            <div v-if="running" class="tape-row">
+              <span class="tape-label">{{ stageText }}</span>
+              <div class="tape"><i :style="{ width: `${progress}%` }" /></div>
+              <span class="pct mono" style="font-size: 11.5px; color: var(--faint)">{{ progress }}%</span>
+            </div>
+            <div v-else-if="job.error" class="notice err" style="margin-top: 12px">{{ job.error }}</div>
+            <div v-if="job.degraded" class="notice warn" style="margin-top: 10px">
+              {{ job.notices || '该任务有部分降级处理，请注意核对证据。' }}
             </div>
 
-            <div class="tabs">
-              <button :class="{ on: tab === 'report' }" @click="tab = 'report'">报告</button>
-              <button :class="{ on: tab === 'chat' }" @click="tab = 'chat'">追问</button>
-              <button :class="{ on: tab === 'transcript' }" @click="tab = 'transcript'">转写与画面</button>
-              <button :class="{ on: tab === 'log' }" @click="tab = 'log'">
-                执行日志 <span class="tab-count">{{ events.length }}</span>
-              </button>
-              <button :class="{ on: tab === 'realtime' }" @click="tab = 'realtime'">实时对话</button>
+            <div class="dossier-actions">
+              <button class="secondary" :disabled="!asset" @click="reanalyze">换个目标重跑</button>
+              <button v-if="running" class="ghost" @click="cancelJob(job)">取消</button>
+              <div class="grow" />
+              <span class="hint">重跑会复用已提取的语音与画面证据，只重新检索、分析与成文。</span>
             </div>
+          </section>
 
-            <div v-show="tab === 'report'">
-              <ReportView
-                :report="report"
-                :job-id="job.id"
-                :asset="asset"
-                :job="job"
-                :job-loading="running"
-                @seek="seek"
-                @notice="notify"
-              />
+          <div v-if="asset && job.status === 'SUCCEEDED'" class="player">
+            <div class="player-head">
+              <span>{{ asset.kind === 'VIDEO' ? '原片回放' : '音频回放' }}</span>
+              <div class="grow" />
+              <span>点击报告里的 [mm:ss] 可跳到对应位置</span>
             </div>
+            <video
+              v-if="asset.kind === 'VIDEO'"
+              ref="player"
+              :src="api.streamUrl(asset.id)"
+              :poster="api.thumbnailUrl(asset.id, 1)"
+              controls
+              preload="metadata"
+            />
+            <audio v-else ref="player" :src="api.streamUrl(asset.id)" controls preload="metadata" />
+          </div>
 
-            <div v-show="tab === 'chat'" class="card-body">
-              <ChatPanel :job-id="job.id" :ai-enabled="!!runtime.aiEnabled" :mode="job.mode" @seek="seek" @notice="notify" />
-            </div>
+          <nav class="tabbar">
+            <button
+              v-for="item in TABS"
+              :key="item.key"
+              :class="{ on: tab === item.key }"
+              @click="tab = item.key"
+            >
+              {{ item.label }}
+              <span v-if="item.key === 'log'" class="tab-count">{{ events.length }}</span>
+            </button>
+          </nav>
 
-            <div v-show="tab === 'transcript'">
-              <TranscriptView :job-id="job.id" :duration-ms="asset?.durationMs || 0" @seek="seek" @notice="notify" />
-            </div>
+          <div v-show="tab === 'report'" class="sheet">
+            <ReportView
+              :report="report"
+              :job-id="job.id"
+              :asset="asset"
+              :job="job"
+              :job-loading="running"
+              @seek="seek"
+              @notice="notify"
+            />
+          </div>
 
-            <div v-show="tab === 'log'" class="log">
+          <div v-show="tab === 'chat'" class="sheet">
+            <ChatPanel :job-id="job.id" :ai-enabled="!!runtime.aiEnabled" :mode="job.mode" @seek="seek" @notice="notify" />
+          </div>
+
+          <div v-show="tab === 'transcript'" class="sheet">
+            <TranscriptView :job-id="job.id" :duration-ms="asset?.durationMs || 0" @seek="seek" @notice="notify" />
+          </div>
+
+          <div v-show="tab === 'log'" class="sheet">
+            <div class="log">
               <div v-if="!events.length" class="empty">暂无事件</div>
               <div
                 v-for="(event, index) in events"
@@ -749,23 +839,24 @@ function toggleTheme() {
                 <span class="log-seq">{{ event.seq }}</span>
                 <span class="log-stage">{{ event.stage }}</span>
                 <span class="log-msg">{{ event.message }}</span>
-                <span v-if="event.progress != null" class="mono small muted">{{ event.progress }}%</span>
+                <span v-if="event.progress != null" class="log-pct">{{ event.progress }}%</span>
               </div>
-            </div>
-
-            <div v-show="tab === 'realtime'">
-              <RealtimePanel :enabled="!!runtime.realtimeEnabled" />
             </div>
           </div>
 
-          <div v-if="jobsOfAsset.length > 1" class="card">
-            <div class="card-head">
+          <div v-show="tab === 'realtime'" class="sheet">
+            <RealtimePanel :enabled="!!runtime.realtimeEnabled" />
+          </div>
+
+          <section v-if="jobsOfAsset.length > 1" class="panel" style="border-radius: var(--radius)">
+            <div class="panel-head">
+              <span class="index">↺</span>
               <h3>同一素材的历史分析</h3>
               <div class="spacer" />
               <span class="count">{{ jobsOfAsset.length }}</span>
             </div>
-            <div class="card-body tight">
-              <div class="list">
+            <div class="panel-body tight">
+              <div class="list scroll-area">
                 <div
                   v-for="item in jobsOfAsset"
                   :key="item.id"
@@ -774,17 +865,20 @@ function toggleTheme() {
                   role="button"
                   tabindex="0"
                   @click="open(item)"
+                  @keyup.enter="open(item)"
                 >
                   <div class="item-main">
                     <div class="item-title">{{ item.title || item.focus || '未命名分析' }}</div>
                     <div class="item-sub">
-                      {{ MODE_LABELS[item.mode] }} · {{ STATUS_LABELS[item.status] }} · {{ formatDateTime(item.createdAt) }}
+                      <span class="mono" style="font-size: 10.5px">#{{ String(item.id).padStart(3, '0') }}</span>
+                      · {{ MODE_LABELS[item.mode] }} · {{ STATUS_LABELS[item.status] }} ·
+                      {{ formatDateTime(item.createdAt) }}
                     </div>
                   </div>
                 </div>
               </div>
             </div>
-          </div>
+          </section>
         </template>
       </div>
     </main>

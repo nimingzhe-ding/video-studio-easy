@@ -92,8 +92,12 @@ function openImage(url) {
 
 <template>
   <div>
-    <div class="transcript-toolbar">
+    <div class="toolbar">
       <div class="search">
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+          <circle cx="7" cy="7" r="4.3" />
+          <path d="M10.2 10.2 14 14" stroke-linecap="round" />
+        </svg>
         <input v-model="keyword" type="search" placeholder="搜索语音内容或画面文字" />
       </div>
       <button class="secondary" :class="{ on: filter === 'all' }" @click="filter = 'all'">
@@ -109,7 +113,7 @@ function openImage(url) {
         <span :class="{ spin: loading }">↻</span>
       </button>
       <div class="export-group" v-if="segments.length">
-        <span class="muted small">导出字幕</span>
+        <span class="muted small" style="letter-spacing: 0.1em">导出</span>
         <a class="chip" :href="api.subtitleUrl(jobId, 'srt')">SRT</a>
         <a class="chip" :href="api.subtitleUrl(jobId, 'vtt')">VTT</a>
         <a class="chip" :href="api.subtitleUrl(jobId, 'txt')">TXT</a>
@@ -183,62 +187,23 @@ function openImage(url) {
 </template>
 
 <style scoped>
-.dur {
-  font-size: 10.5px;
-  color: var(--faint);
-  margin-top: 2px;
-}
-
 /* 说话人标签和正文放在同一列，避免标签占掉一整行的高度 */
 .seg-body {
   flex: 1;
   min-width: 0;
 }
 
-.speaker {
-  display: inline-block;
-  margin-bottom: 4px;
-  padding: 1px 7px;
-  border: 1px solid currentColor;
-  border-radius: 20px;
-  font-size: 10.5px;
-  line-height: 1.5;
-  opacity: 0.9;
-}
-
 .export-group {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   margin-left: auto;
 }
 
 .export-group .chip {
-  padding: 4px 10px;
-  border-radius: 20px;
-  border: 1px solid var(--border);
-  background: var(--panel-2);
-  color: var(--text-soft);
-  font-size: 12px;
-  text-decoration: none;
-}
-
-.export-group .chip:hover {
-  border-color: var(--accent);
-  color: var(--accent-strong);
-}
-
-.evidence-card .cap.caption {
-  color: var(--muted);
-  font-style: italic;
-  border-top: 1px dashed var(--border);
-}
-
-.transcript-foot {
-  padding: 12px 16px;
-  border-top: 1px solid var(--border);
-  color: var(--faint);
-  font-size: 12px;
-  text-align: center;
+  padding: 3px 9px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
 }
 </style>

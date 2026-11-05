@@ -252,21 +252,8 @@ onUnmounted(cleanup);
 </template>
 
 <style scoped>
-.rt-transcript {
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 12px 14px;
-  background: var(--panel-2);
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  max-height: 220px;
-  overflow-y: auto;
-  font-size: 13px;
-  line-height: 1.7;
-}
-
-.rt-line {
-  color: var(--text-soft);
+/* 波形柱在这里只负责几何，颜色与动效走全局设计 token */
+.wave i {
+  transition: height 0.12s linear, opacity 0.2s ease;
 }
 </style>
