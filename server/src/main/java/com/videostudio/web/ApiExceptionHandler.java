@@ -38,10 +38,17 @@ public class ApiExceptionHandler {
         return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
     }
 
+    @ExceptionHandler({org.springframework.dao.DataAccessResourceFailureException.class,
+        org.springframework.data.redis.RedisConnectionFailureException.class})
+    public ResponseEntity<ApiResponse<Void>> unavailable(Exception e) {
+        log.error("共享数据服务不可用",e);
+        return ResponseEntity.status(503).body(ApiResponse.error("服务暂时不可用，请稍后重试"));
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiResponse<Void>> unexpected(Exception e) {
         log.error("未处理异常", e);
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                .body(ApiResponse.error("服务内部错误：" + e.getClass().getSimpleName()));
+                .body(ApiResponse.error("服务内部错误，请稍后重试"));
     }
 }

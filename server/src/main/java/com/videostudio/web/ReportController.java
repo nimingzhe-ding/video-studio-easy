@@ -32,9 +32,11 @@ public class ReportController {
     private final TranscriptRepository transcriptRepository;
     private final JobRepository jobRepository;
     private final Storage storage;
+    private final com.videostudio.storage.MediaObjects objects;
 
     public ReportController(ReportRepository reportRepository, TranscriptRepository transcriptRepository,
-                            JobRepository jobRepository, Storage storage) {
+                            JobRepository jobRepository, Storage storage, com.videostudio.storage.MediaObjects objects) {
+        this.objects=objects;
         this.reportRepository = reportRepository;
         this.transcriptRepository = transcriptRepository;
         this.jobRepository = jobRepository;
@@ -56,14 +58,7 @@ public class ReportController {
     public ResponseEntity<Resource> docx(@PathVariable long id) {
         var report = reportRepository.findByJob(id)
                 .orElseThrow(() -> ApiException.notFound("该任务还没有生成报告"));
-        String path = report.docxPath();
-        if (path == null || path.isBlank()) {
-            path = storage.reportDocx(report.assetId(), id).toString();
-        }
-        File file = new File(path);
-        if (!file.isFile()) {
-            throw ApiException.notFound("报告文件不存在，请重新生成");
-        }
+        File file = objects.ensureLocal(objects.reportKey(report.assetId(),id),storage.reportDocx(report.assetId(),id)).toFile();
         String name = "video-studio-report-" + id + ".docx";
         String encoded = URLEncoder.encode(name, StandardCharsets.UTF_8).replace("+", "%20");
         return ResponseEntity.ok()

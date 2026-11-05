@@ -32,19 +32,21 @@ public class MediaRepository {
             Sql.instant(rs.getTimestamp("created_at")));
 
     private final JdbcTemplate jdbc;
+    private final com.videostudio.security.CurrentUser current;
 
-    public MediaRepository(JdbcTemplate jdbc) {
+    public MediaRepository(JdbcTemplate jdbc, com.videostudio.security.CurrentUser current) {
+        this.current=current;
         this.jdbc = jdbc;
     }
 
     public long insert(MediaAsset asset) {
         return Sql.insert(jdbc, """
-                INSERT INTO media_asset (name, kind, size_bytes, duration_ms, width, height, fps,
+                INSERT INTO media_asset (owner_id, name, kind, size_bytes, duration_ms, width, height, fps,
                                          video_codec, audio_codec, storage_path, audio_path, frame_dir,
                                          meta_json, created_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
-                asset.name(), asset.kind().name(), asset.sizeBytes(), asset.durationMs(),
+                current.id(), asset.name(), asset.kind().name(), asset.sizeBytes(), asset.durationMs(),
                 asset.width(), asset.height(), asset.fps(), asset.videoCodec(), asset.audioCodec(),
                 asset.storagePath(), asset.audioPath(), asset.frameDir(), asset.metaJson(), Sql.now());
     }
@@ -55,7 +57,7 @@ public class MediaRepository {
     }
 
     public List<MediaAsset> list(int limit) {
-        return jdbc.query("SELECT * FROM media_asset ORDER BY id DESC LIMIT ?", ROW, limit);
+        return jdbc.query("SELECT * FROM media_asset WHERE owner_id = ? ORDER BY id DESC LIMIT ?", ROW, current.id(), limit);
     }
 
     /** 落盘后回写真实路径：上传时先拿 id 再写文件，路径只能在写入之后确定 */

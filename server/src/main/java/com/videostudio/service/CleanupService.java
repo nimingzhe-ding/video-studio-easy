@@ -47,13 +47,18 @@ public class CleanupService {
     private final Storage storage;
     private final MediaObjects objects;
     private final VectorStore vectors;
+    private final org.redisson.api.RedissonClient locks;
+    private final org.springframework.transaction.support.TransactionTemplate transactions;
+    private final org.springframework.jdbc.core.JdbcTemplate jdbc;
 
     public CleanupService(MediaRepository mediaRepository, JobRepository jobRepository,
                           JobEventRepository eventRepository, TranscriptRepository transcriptRepository,
                           VisualRepository visualRepository, ChunkRepository chunkRepository,
                           ReportRepository reportRepository, ChatRepository chatRepository,
                           JobService jobService, Storage storage,
-                          MediaObjects objects, VectorStore vectors) {
+                          MediaObjects objects, VectorStore vectors, org.redisson.api.RedissonClient locks,
+                          org.springframework.transaction.support.TransactionTemplate transactions, org.springframework.jdbc.core.JdbcTemplate jdbc) {
+        this.locks=locks; this.transactions=transactions; this.jdbc=jdbc;
         this.mediaRepository = mediaRepository;
         this.jobRepository = jobRepository;
         this.eventRepository = eventRepository;
@@ -70,26 +75,45 @@ public class CleanupService {
 
     /** 删除单个任务：运行中的先取消，再清证据与磁盘目录 */
     public void deleteJob(long jobId) {
+        withJobLock(jobId,() -> transactions.executeWithoutResult(tx -> deleteJobLocked(jobId)));
+    }
+    private void deleteJobLocked(long jobId) {
         AnalysisJob job = jobRepository.find(jobId)
                 .orElseThrow(() -> ApiException.notFound("任务不存在: " + jobId));
         if (job.status().running()) {
             jobService.cancel(jobId);
         }
+        objects.deleteJob(job.assetId(),jobId);
+        vectors.deleteJob(jobId);
         purgeJobRows(jobId);
         deleteQuietly(storage.mediaDir(job.assetId()).resolve("frames").resolve("job-" + jobId));
         deleteQuietly(storage.mediaDir(job.assetId()).resolve("asr").resolve("job-" + jobId));
         deleteQuietly(storage.mediaDir(job.assetId()).resolve("audio").resolve("job-" + jobId));
         deleteQuietly(storage.reportDocx(job.assetId(), jobId));
         // 外部存储里的副本也要收掉，否则桶里会攒下没人引用的关键帧与向量
-        objects.deleteJob(job.assetId(), jobId);
-        vectors.deleteJob(jobId);
         log.info("已删除任务 {} (asset={})", jobId, job.assetId());
     }
 
     /** 删除媒体：连同其全部任务、证据与 {root}/media/{id} 目录 */
     public void deleteMedia(long assetId) {
+        transactions.executeWithoutResult(tx -> {
+            jdbc.queryForObject("SELECT id FROM media_asset WHERE id=? FOR UPDATE",Long.class,assetId);
+            var acquired=new java.util.ArrayList<org.redisson.api.RLock>();
+            try {
+                for(long id:jobRepository.idsByAsset(assetId)) {
+                    var lock=locks.getLock("worker:job:"+id);
+                    if(!lock.tryLock()) throw ApiException.conflict("分析任务仍在执行，请先取消并等待停止");
+                    acquired.add(lock);
+                }
+                deleteMediaLocked(assetId);
+            } finally { for(var lock:acquired) if(lock.isHeldByCurrentThread()) lock.unlock(); }
+        });
+    }
+    private void deleteMediaLocked(long assetId) {
         MediaAsset asset = mediaRepository.find(assetId)
                 .orElseThrow(() -> ApiException.notFound("媒体不存在: " + assetId));
+        objects.deleteAsset(assetId);
+        vectors.deleteAsset(assetId);
         List<Long> jobIds = jobRepository.idsByAsset(assetId);
         for (Long jobId : jobIds) {
             AnalysisJob job = jobRepository.find(jobId).orElse(null);
@@ -98,14 +122,22 @@ public class CleanupService {
             }
             purgeJobRows(jobId);
         }
+        jdbc.update("DELETE c FROM upload_chunk c JOIN upload_session s ON s.upload_id=c.upload_id WHERE s.asset_id=?",assetId);
+        jdbc.update("DELETE FROM upload_session WHERE asset_id=?",assetId);
         mediaRepository.delete(assetId);
         deleteQuietly(storage.root().resolve("media").resolve(Long.toString(assetId)));
-        objects.deleteAsset(assetId);
-        vectors.deleteAsset(assetId);
         log.info("已删除媒体 {} ({}), 连带任务 {}", assetId, asset.name(), jobIds);
     }
 
+    private void withJobLock(long id,Runnable action) {
+        var lock=locks.getLock("worker:job:"+id);
+        if(!lock.tryLock()) throw ApiException.conflict("任务仍在执行或停止中，请稍后删除");
+        try { action.run(); } finally { if(lock.isHeldByCurrentThread()) lock.unlock(); }
+    }
     private void purgeJobRows(long jobId) {
+        jdbc.update("DELETE FROM job_checkpoint WHERE job_id=?",jobId);
+        jdbc.update("DELETE FROM job_outbox WHERE job_id=?",jobId);
+        jdbc.update("DELETE FROM failed_delivery WHERE job_id=?",jobId);
         eventRepository.deleteByJob(jobId);
         transcriptRepository.deleteByJob(jobId);
         visualRepository.deleteByJob(jobId);

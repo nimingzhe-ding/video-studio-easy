@@ -20,12 +20,18 @@ public class VisualRepository {
             rs.getString("source"));
 
     private final JdbcTemplate jdbc;
+    private final com.videostudio.storage.MediaObjects objects;
 
-    public VisualRepository(JdbcTemplate jdbc) {
+    public VisualRepository(JdbcTemplate jdbc, com.videostudio.storage.MediaObjects objects) {
+        this.objects=objects;
         this.jdbc = jdbc;
     }
 
+    @org.springframework.transaction.annotation.Transactional
     public void replace(long assetId, long jobId, List<VisualEvidence> items) {
+        if(items!=null) {
+            objects.putFrames(assetId,jobId,items.stream().map(v -> java.nio.file.Path.of(v.framePath())).toList());
+        }
         jdbc.update("DELETE FROM visual_evidence WHERE job_id = ?", jobId);
         if (items == null || items.isEmpty()) {
             return;
@@ -33,7 +39,7 @@ public class VisualRepository {
         java.util.List<Object[]> args = new java.util.ArrayList<>();
         for (int i = 0; i < items.size(); i++) {
             VisualEvidence v = items.get(i);
-            args.add(new Object[]{assetId, jobId, i, v.timeMs(), v.framePath(), v.ocrText(), v.caption(), v.hash(), v.source()});
+            args.add(new Object[]{assetId, jobId, i, v.timeMs(), objects.frameKey(assetId,jobId,java.nio.file.Path.of(v.framePath()).getFileName().toString()), v.ocrText(), v.caption(), v.hash(), v.source()});
         }
         jdbc.batchUpdate("""
                 INSERT INTO visual_evidence (asset_id, job_id, seq, time_ms, frame_path, ocr_text, caption, hash, source)

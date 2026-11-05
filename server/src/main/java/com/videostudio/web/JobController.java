@@ -60,7 +60,9 @@ public class JobController {
     }
 
     @PostMapping
-    public ApiResponse<AnalysisJob> submit(@RequestBody SubmitRequest request) {
+    public ApiResponse<AnalysisJob> submit(@RequestBody SubmitRequest request, jakarta.servlet.http.HttpServletRequest http) {
+        limiter.require("rate:submit:user:"+http.getUserPrincipal().getName(),rateLimits.getSubmitPerMinute(),
+            java.time.Duration.ofMinutes(1),"分析提交过于频繁");
         if (request.assetId() <= 0) {
             throw new ApiException("缺少 assetId");
         }

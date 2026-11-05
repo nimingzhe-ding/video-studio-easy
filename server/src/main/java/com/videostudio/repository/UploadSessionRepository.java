@@ -51,6 +51,7 @@ public class UploadSessionRepository {
      *
      * @return true 表示这是一片新内容，false 表示覆盖了已有分片
      */
+    @org.springframework.transaction.annotation.Transactional
     public boolean recordChunk(String uploadId, int index, long sizeBytes) {
         boolean existed = hasChunk(uploadId, index);
         jdbc.update("DELETE FROM upload_chunk WHERE upload_id = ? AND chunk_index = ?", uploadId, index);

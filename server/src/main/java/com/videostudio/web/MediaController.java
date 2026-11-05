@@ -47,7 +47,7 @@ public class MediaController {
     public ApiResponse<MediaAsset> upload(@RequestParam("file") MultipartFile file,
                                           jakarta.servlet.http.HttpServletRequest request) {
         // 上传按客户端 IP 限流：这里还没有素材 id 可用，而上传是最容易被脚本批量刷的入口
-        limiter.require("rate:upload:" + clientIp(request), rateLimits.getUploadPerMinute(),
+        limiter.require("rate:upload:user:" + request.getUserPrincipal().getName(), rateLimits.getUploadPerMinute(),
                 java.time.Duration.ofMinutes(1), "上传过于频繁");
         return ApiResponse.success(ingestService.ingest(file));
     }
@@ -70,15 +70,7 @@ public class MediaController {
 
     /** 删除媒体：连带其任务、证据、报告与磁盘目录，避免留下孤儿数据 */
     /** 取真实客户端 IP：经过反向代理时要读 X-Forwarded-For 的第一个 */
-    static String clientIp(jakarta.servlet.http.HttpServletRequest request) {
-        String forwarded = request.getHeader("X-Forwarded-For");
-        if (forwarded != null && !forwarded.isBlank()) {
-            int comma = forwarded.indexOf(',');
-            return (comma > 0 ? forwarded.substring(0, comma) : forwarded).strip();
-        }
-        String real = request.getHeader("X-Real-IP");
-        return real == null || real.isBlank() ? request.getRemoteAddr() : real.strip();
-    }
+    static String clientIp(jakarta.servlet.http.HttpServletRequest request) { return request.getRemoteAddr(); }
 
     @DeleteMapping("/{id}")
     public ApiResponse<Void> delete(@PathVariable long id) {

@@ -22,10 +22,12 @@ import java.util.Map;
 public class ChatController {
 
     private final FollowUpService followUpService;
+    private final com.videostudio.infra.BudgetGuard budget;
     private final RateLimiter limiter;
     private final RateLimitProperties rateLimits;
 
-    public ChatController(FollowUpService followUpService, RateLimiter limiter, RateLimitProperties rateLimits) {
+    public ChatController(FollowUpService followUpService, RateLimiter limiter, RateLimitProperties rateLimits, com.videostudio.infra.BudgetGuard budget) {
+        this.budget=budget;
         this.followUpService = followUpService;
         this.limiter = limiter;
         this.rateLimits = rateLimits;
@@ -39,8 +41,12 @@ public class ChatController {
         // 追问每次都会调模型（有 key 时），按任务限流最贴合真实成本来源
         limiter.require("rate:chat:" + id, rateLimits.getChatPerMinute(),
                 java.time.Duration.ofMinutes(1), "该任务的追问过于频繁");
-        String answer = followUpService.ask(id, body == null ? null : body.question());
-        return ApiResponse.success(Map.of("answer", answer));
+        budget.enter(id);
+        try {
+            budget.requireAvailable();
+            String answer = followUpService.ask(id, body == null ? null : body.question());
+            return ApiResponse.success(Map.of("answer", answer));
+        } finally { budget.leave(); }
     }
 
     @GetMapping

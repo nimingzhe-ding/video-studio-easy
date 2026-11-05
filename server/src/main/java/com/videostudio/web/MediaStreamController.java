@@ -49,9 +49,11 @@ public class MediaStreamController {
     private final Storage storage;
     private final ProcessRunner runner;
     private final AppProperties props;
+    private final com.videostudio.storage.MediaObjects objects;
 
     public MediaStreamController(MediaRepository mediaRepository, VisualRepository visualRepository,
-                                 Storage storage, ProcessRunner runner, AppProperties props) {
+                                 Storage storage, ProcessRunner runner, AppProperties props, com.videostudio.storage.MediaObjects objects) {
+        this.objects=objects;
         this.mediaRepository = mediaRepository;
         this.visualRepository = visualRepository;
         this.storage = storage;
@@ -142,7 +144,9 @@ public class MediaStreamController {
         if (Texts.isBlank(evidence.framePath())) {
             throw ApiException.notFound("该条证据没有画面帧");
         }
-        Path path = Path.of(evidence.framePath());
+        String[] key=evidence.framePath().split("/");
+        if(key.length<2 || !key[0].equals("assets")) throw new ApiException(409,"历史关键帧尚未迁移到对象存储");
+        Path path = Path.of(objects.materializeFrame(Long.parseLong(key[1]),jobId,evidence).framePath());
         if (!Files.isRegularFile(path)) {
             throw ApiException.notFound("证据帧文件已被清理，请重新运行分析");
         }
@@ -200,14 +204,7 @@ public class MediaStreamController {
     }
 
     private Path existingSource(MediaAsset asset) {
-        if (Texts.isBlank(asset.storagePath())) {
-            throw ApiException.notFound("该媒体尚未落盘，请重新上传");
-        }
-        Path path = Path.of(asset.storagePath());
-        if (!Files.isRegularFile(path)) {
-            throw ApiException.notFound("原始文件不存在，可能已被清理");
-        }
-        return path;
+        return objects.ensureSource(asset.id(),asset.name(),storage.sourceFile(asset.id(),asset.name()));
     }
 
     private long size(Path file) {
@@ -260,7 +257,7 @@ public class MediaStreamController {
                 "kind", asset.kind().name(),
                 "durationMs", asset.durationMs(),
                 "sizeBytes", asset.sizeBytes(),
-                "playable", !Texts.isBlank(asset.storagePath()) && Files.isRegularFile(Path.of(asset.storagePath())),
+                "playable", !Texts.isBlank(asset.storagePath()),
                 "stream", "/api/media/" + asset.id() + "/stream");
     }
 
