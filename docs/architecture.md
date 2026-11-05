@@ -195,6 +195,11 @@ chunk.score = 0.60 * cosine(question, chunk.embedding)
 `termScore` 是中英混排的命中率（中文取单字 + 相邻二字，英文按单词），
 向量维度不一致或为空时该项直接为 0，等价于退化为词项检索。
 
+检索只做到 **chunk 级**：命中后把这个分块覆盖的全部转写片段与画面证据整体交给 Agent。
+参考项目多一层 segment 级细排（`chunk*0.55 + 转写*0.25 + 画面*0.20`），
+能把 5 分钟分块里真正相关的那 20 秒单独拎出来；本项目不做，是因为报告的结论本来就按分块组织，
+再细一层的收益不明显。差异对照见 [对比文档 §4.1](comparison.md#41-检索粒度chunk-级-vs-两段式)。
+
 ### 3.5 Agent：Planner / Executor / Critic
 
 ```
@@ -505,9 +510,34 @@ for (int i = 1; i < span - 1; i++) {
 - `DELETE /api/jobs/{id}` 与级联的 `DELETE /api/media/{id}` 由 `CleanupService` 统一处理，
   按 `job-{id}` 目录粒度删除，避免误删同素材其他任务的帧与音频
 
-## 7. 未做但值得做的
+## 7. 部署形态与中间件
 
-- 真正的增量 embedding 与向量库（当前是内存内暴力检索）
+代码里对每个中间件都是「接口 + 两个实现 + 自动降级」，切换只靠环境变量：
+
+| 能力 | 接口 | 单机实现 | 容器实现 |
+| --- | --- | --- | --- |
+| 对象存储 | `storage/ObjectStore` | `LocalObjectStore` | `MinioObjectStore` |
+| 向量检索 | `retrieval/VectorStore` | `MemoryVectorStore` | `MilvusVectorStore` |
+| 数据库 | JDBC + 一份 MySQL 方言 DDL | H2（`MODE=MySQL`） | MySQL 8.4 |
+
+三条实现约束：
+
+1. **本地盘是工作区，对象存储是持久层**。ffmpeg / whisper / tesseract 只能吃本地路径，
+   所以 `MediaObjects.ensureSource()` 在源文件缺失时从桶里拉回一份副本，
+   而不是让这些工具直接去读对象存储。
+2. **未启用时连客户端都不创建**（`ObjectStoreConfig` / `VectorStoreConfig`），
+   否则每次启动都要白白等一次网络超时。
+3. **除数据库外都允许「先起来、后重连」**：MinIO 探测 bucket 失败就 `ready=false`、
+   Milvus 检索失败就退回关键词打分。数据库是唯一真相源，连不上就该启动失败。
+
+容器部署（四阶段构建、whisper 模型挂卷、MinIO 官方镜像已下架的处理）见
+[部署与中间件](deployment.md)。
+
+## 8. 未做但值得做的
+
+- 真正的增量 embedding（已接 Milvus，但仍是「每个任务重建自己那份向量」，
+  没有做到「同一素材新增分块只补增量」；量级测算见 [对比文档 §5](comparison.md#5-内存与向量库的实测数据)）
 - 多任务共享同一份「证据提取」结果，避免重复抽帧/转写（已部分完成：见 3.6）
 - 声纹级说话人分离（当前只用到音高，音色相近的人会合并；见 3.11 的已知边界）
 - 视觉模型描述关键帧（已完成：见 3.9，默认关闭、只描述空文字帧）
+- 与参考项目的其余差距（URL 导入、登录、断点续跑、成本预算）逐项列在 [对比文档 §6](comparison.md#6-若要补齐差距各需要什么)

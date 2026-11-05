@@ -89,11 +89,26 @@ macOS 上可以用仓库自带的脚本编译一个基于 Vision 框架的 OCR �
 
 ### 2. 启动后端
 
+**单机模式（默认，零中间件）**——H2 文件库 + 本地磁盘 + 内存检索，clone 下来就能跑：
+
 ```bash
 cd server
 mvn spring-boot:run
 # 默认监听 http://127.0.0.1:9090
 ```
+
+**容器模式（产品形态）**——MySQL + Redis + MinIO + Milvus 全套中间件：
+
+```bash
+cp .env.example .env      # 至少改掉 MYSQL_PASSWORD 与 MINIO_ROOT_PASSWORD
+docker compose up -d --build
+# 首次构建约 8-15 分钟（要编 whisper.cpp），之后启动约 30 秒
+# 打开 http://localhost:9090
+```
+
+两种模式跑的是同一份代码，差别只在环境变量：`DB_URL` 没设就用 H2，
+`OBJECT_STORAGE_ENABLED` / `VECTOR_ENABLED` 没打开就用本地磁盘与内存检索，
+任意一个中间件连不上时都会自动降级而不是启动失败。
 
 ### 3. 启动前端（开发模式）
 
@@ -143,7 +158,25 @@ export LLM_MODEL=qwen-plus
 | `UPLOAD_CHUNK_SIZE` | `8388608` | 分片大小（8 MB） |
 | `UPLOAD_MAX_CHUNKS` | `20000` | 单个文件最多分片数 |
 | `UPLOAD_RETENTION_HOURS` | `24` | 未完成分片会话的保留时长，超时由定时任务清理 |
-| `DB_URL` | `jdbc:h2:file:./data/db/video-studio;AUTO_SERVER=TRUE;DB_CLOSE_DELAY=-1` | 数据库连接串 |
+| `DB_URL` | `jdbc:h2:file:./data/db/video-studio;AUTO_SERVER=TRUE;DB_CLOSE_DELAY=-1;MODE=MySQL` | 数据库连接串；改成 `jdbc:mysql://...` 即切 MySQL |
+| `DB_USERNAME` / `DB_PASSWORD` | 空 | 数据库账号（H2 不需要） |
+
+### 中间件（全部可选，不配就用本地替代）
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `REDIS_ENABLED` | `false` | 是否接入 Redis |
+| `REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD` | `127.0.0.1` / `6379` / 空 | Redis 连接 |
+| `OBJECT_STORAGE_ENABLED` | `false` | 是否把媒体、关键帧、报告同步到对象存储 |
+| `MINIO_ENDPOINT` | `http://127.0.0.1:9000` | 对象存储端点 |
+| `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` | `minioadmin` / `minioadmin` | 对象存储凭据 |
+| `MINIO_BUCKET` | `video-studio` | 桶名，启动时自动创建 |
+| `VECTOR_ENABLED` | `false` | 是否把分块向量写入向量库 |
+| `MILVUS_HOST` / `MILVUS_PORT` | `127.0.0.1` / `19530` | 向量库地址 |
+| `MILVUS_COLLECTION` | `video_studio_chunks` | 集合名，维度按实际向量自动建 |
+
+> 三个开关都关掉时，应用只用 H2 + 本地磁盘 + 内存余弦检索，是一条外部依赖为零的路径。
+> 打开后如果中间件连不上，各自会降级并打警告，不会让服务起不来。
 
 ### 本地媒体工具
 
@@ -358,10 +391,11 @@ video-studio-easy/
 │       │   ├── asr/              # 云端 ASR + whisper 本地回退 + 分片合并
 │       │   ├── ocr/              # OCR 命令封装 + 关键帧证据编排
 │       │   ├── context/          # 时间轴对齐、上下文分块、摘要与 embedding
-│       │   ├── retrieval/        # 混合检索
+│       │   ├── retrieval/        # 混合检索 + 向量库抽象（内存 / Milvus）
 │       │   ├── llm/              # OpenAI 兼容网关（chat / vision / embed）
 │       │   ├── agent/            # Planner / Executor / Critic / 证据校验 / 报告合成
 │       │   ├── report/           # Markdown → Word
+│       │   ├── storage/          # 对象存储（本地 / MinIO）与媒体对象同步
 │       │   ├── service/          # 任务调度、分析流水线、追问、模式路由、证据复用
 │       │   └── web/              # REST / SSE / WebSocket
 │       └── resources/
@@ -376,6 +410,9 @@ video-studio-easy/
 │       ├── markdown.js           # Markdown 渲染 + [mm:ss] 时间戳胶囊 + 搜索高亮
 │       ├── styles.css            # 手工设计系统（明暗主题、响应式）
 │       └── components/           # JobCard / ReportView / TranscriptView / ChatPanel / RealtimePanel
+├── docker/                       # Dockerfile（多阶段：前端 → 后端 → whisper.cpp）与启动脚本
+├── docker-compose.yml            # MySQL + Redis + MinIO + Milvus + etcd + 应用
+├── .env.example                  # 容器部署的环境变量模板
 ├── tools/vision-ocr/             # macOS Vision OCR 命令行（可选）
 └── docs/                         # 设计文档
 server/src/test/java/             # 路由规则与上下文预算的单元测试
@@ -385,17 +422,29 @@ server/src/test/java/             # 路由规则与上下文预算的单元测�
 
 ## 设计取舍
 
-第一版刻意**没有**引入参考项目里的 RocketMQ / Redisson / MySQL + Redis 双 checkpoint / Qdrant / MinIO：
+代码里对每个中间件都做了**接口 + 两个实现 + 自动降级**：单机跑用本地实现，容器里跑用真实中间件，
+同一份代码、同一套接口，切换只靠环境变量。
 
-| 组件 | 参考项目做法 | 本项目的做法 | 理由 |
+| 组件 | 单机模式（默认） | 容器模式 | 为什么这么分 |
 | --- | --- | --- | --- |
-| 消息队列 | RocketMQ 分发分析阶段 | 固定线程池 + 数据库状态机 | 单机 demo 不需要跨进程重试语义，状态落库已能做崩溃恢复 |
-| 向量库 | Qdrant | 分块 embedding 存 JSON 列，内存内余弦 | 单视频分块量级在几百，暴力检索毫秒级 |
-| 对象存储 | MinIO | 本地目录 + 任务级隔离 | 少一个必须部署的依赖 |
-| 缓存 | Redis | 无（H2 + 内存） | 避免引入第二个数据源 |
+| 数据库 | H2 文件库（`MODE=MySQL`） | MySQL 8.4 | 同一份 MySQL 方言 DDL 两边都能建表（已实测），不维护两套脚本 |
+| 对象存储 | 本地目录 + 任务级隔离 | MinIO | ffmpeg / whisper / tesseract 只能吃本地路径，所以本地盘是工作区、对象存储是持久层 |
+| 向量检索 | 内存余弦，embedding 存 JSON 列 | Milvus（HNSW/COSINE） | 单素材几百个分块时暴力扫描毫秒级；换成向量库是为了把「读全部」变成「读 top-k」 |
+| 消息队列 | 固定线程池 + 数据库状态机 | 同左 | 没有跨进程重试的诉求，状态落库已经能做崩溃恢复（`failZombies`） |
+| 缓存 | 无 | Redis（可选） | 只放可重建数据，读不到就走数据库 |
+
+降级是刻意的设计：`OBJECT_STORAGE_ENABLED` / `VECTOR_ENABLED` 打开但中间件连不上时，
+各自打一条警告后继续跑（对象存储写入跳过、向量检索退回关键词打分），不会让服务起不来。
+容器编排里中间件比应用晚就绪是常态。
 
 保留的是真正决定产品体验的部分：**时间戳证据链**。报告里的每一条结论都必须指回原片，
 Critic 会用确定性规则去核对，这是「总结工具」和「可信分析工具」的分界线。
+
+保留的是真正决定产品体验的部分：**时间戳证据链**。报告里的每一条结论都必须指回原片，
+Critic 会用确定性规则去核对，这是「总结工具」和「可信分析工具」的分界线。
+
+和参考项目的完整差异（能力对照、同一件事的不同做法、内存与向量库的实测数据）见
+[与参考项目的对比](docs/comparison.md)。
 
 ---
 
@@ -415,9 +464,11 @@ Critic 会用确定性规则去核对，这是「总结工具」和「可信分�
 
 ## 文档
 
+- [部署与中间件](docs/deployment.md) — 两条运行路径、中间件降级行为、容器部署的坑
 - [架构说明](docs/architecture.md)
 - [API 参考](docs/api.md)
 - [提示词设计](docs/prompts.md)
+- [与参考项目的对比](docs/comparison.md)
 
 ---
 

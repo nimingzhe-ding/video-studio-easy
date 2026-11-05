@@ -382,9 +382,17 @@ Content-Disposition: attachment; filename*=UTF-8''video-studio-15.srt
   "embeddingModel": "text-embedding-v3",
   "visionModel": "qwen-vl-max",
   "visionCaptionEnabled": false,
+  "objectStorage": "local",
+  "objectStorageEnabled": false,
+  "vectorStore": "memory",
+  "vectorStoreEnabled": false,
   "status": 5
 }
 ```
+
+`objectStorage` / `vectorStore` 是当前实际生效的实现名（`local` / `minio`、`memory` / `milvus`），
+用来在界面上确认「这次到底用的是本地实现还是中间件」——开关打开了但中间件连不上时，
+这里的值仍然会是 `minio` / `milvus`，需要看日志里的降级警告。
 
 前端用来提示「当前未配置大模型」。`visionCaptionEnabled` 同时受 `cloudEnabled()` 与
 `VISION_CAPTION_ENABLED` 约束——没有 key 时即使打开开关也不会真的调模型。
