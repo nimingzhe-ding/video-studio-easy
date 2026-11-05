@@ -15,6 +15,7 @@ public class AppProperties {
     private final Upload upload = new Upload();
     private final ObjectStorage objectStorage = new ObjectStorage();
     private final Vector vector = new Vector();
+    private final Redis redis = new Redis();
 
     public Storage getStorage() {
         return storage;
@@ -34,6 +35,57 @@ public class AppProperties {
 
     public Vector getVector() {
         return vector;
+    }
+
+    public Redis getRedis() {
+        return redis;
+    }
+
+    /**
+     * Redis 的开关与策略。
+     * <p>默认关闭；关闭时所有依赖它的能力（分布式锁、跨实例事件广播、配额计数）
+     * 都会退化成进程内实现，单机体验完全一致，也不会因为没装 Redis 起不来。
+     */
+    public static class Redis {
+        private boolean enabled = false;
+        /** 锁的持有时间上限：超过即认为持有者已经挂了，避免死锁 */
+        private long lockTtlSeconds = 30;
+        /** 拿不到锁时最多等多久，等不到就返回 409，而不是无限阻塞 Tomcat 线程 */
+        private long lockWaitMillis = 800;
+        /** 事件广播保留多久，用于后端实例短暂抖动期间补读 */
+        private long eventTtlMinutes = 30;
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public long getLockTtlSeconds() {
+            return lockTtlSeconds;
+        }
+
+        public void setLockTtlSeconds(long lockTtlSeconds) {
+            this.lockTtlSeconds = lockTtlSeconds;
+        }
+
+        public long getLockWaitMillis() {
+            return lockWaitMillis;
+        }
+
+        public void setLockWaitMillis(long lockWaitMillis) {
+            this.lockWaitMillis = lockWaitMillis;
+        }
+
+        public long getEventTtlMinutes() {
+            return eventTtlMinutes;
+        }
+
+        public void setEventTtlMinutes(long eventTtlMinutes) {
+            this.eventTtlMinutes = eventTtlMinutes;
+        }
     }
 
     /**

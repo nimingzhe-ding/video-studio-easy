@@ -7,6 +7,8 @@ import com.videostudio.common.Http;
 import com.videostudio.common.Json;
 import com.videostudio.common.Texts;
 import com.videostudio.config.AiProperties;
+import com.videostudio.infra.BudgetGuard;
+import com.videostudio.infra.JobMetrics;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -27,9 +29,25 @@ public class LlmGateway {
     private static final Logger log = LoggerFactory.getLogger(LlmGateway.class);
 
     private final AiProperties ai;
+    /** 指标是可选的：单测只关心解析逻辑，传 null 也要能跑 */
+    private final JobMetrics metrics;
+    /** 记账同样可选；有它才能统计 token 与拦截超支 */
+    private final BudgetGuard budget;
 
     public LlmGateway(AiProperties ai) {
+        this(ai, null, null);
+    }
+
+    public LlmGateway(AiProperties ai, JobMetrics metrics) {
+        this(ai, metrics, null);
+    }
+
+    /** 容器使用的构造器；其余重载只给单测用，所以必须显式标注 */
+    @org.springframework.beans.factory.annotation.Autowired
+    public LlmGateway(AiProperties ai, JobMetrics metrics, BudgetGuard budget) {
         this.ai = ai;
+        this.metrics = metrics;
+        this.budget = budget;
     }
 
     public boolean enabled() {
@@ -63,6 +81,10 @@ public class LlmGateway {
         if (!enabled()) {
             return null;
         }
+        if (budget != null && budget.exceeded(currentJob())) {
+            // 已经超支就不再发请求：继续重试只会烧掉更多额度
+            return null;
+        }
         ObjectNode payload = Json.object();
         payload.put("model", ai.getModel());
         ArrayNode array = payload.putArray("messages");
@@ -77,6 +99,7 @@ public class LlmGateway {
         }
         String json = Json.write(payload);
         int attempts = Math.max(1, ai.getMaxRetries());
+        long started = System.nanoTime();
         for (int attempt = 1; attempt <= attempts; attempt++) {
             try {
                 Http.Response response = Http.postJson(ai.chatUrl(), headers(ai.getApiKey()), json,
@@ -88,7 +111,9 @@ public class LlmGateway {
                         return null;
                     }
                 } else {
-                    return parse(response.body(), purpose);
+                    ChatResult result = parse(response.body(), purpose);
+                    recordUsage(purpose, started, result);
+                    return result;
                 }
             } catch (RuntimeException e) {
                 log.warn("LLM {}({}) 调用异常 attempt={}: {}", purpose, ai.getModel(), attempt, e.getMessage());
@@ -99,6 +124,26 @@ public class LlmGateway {
             sleep(attempt);
         }
         return null;
+    }
+
+    /** 当前任务 id；没有任务上下文（比如追问接口）时返回 0，表示不参与预算 */
+    private long currentJob() {
+        return budget == null ? 0 : budget.currentJob();
+    }
+
+    /** 记一次调用的耗时与 token 消耗；metrics 为空时静默跳过 */
+    private void recordUsage(String purpose, long startedNano, ChatResult result) {
+        if (result != null && budget != null) {
+            // 记账走 ThreadLocal 里的当前任务，调用方不必层层传 jobId
+            budget.consumeCurrent(result.totalTokens());
+        }
+        if (metrics == null) {
+            return;
+        }
+        metrics.llmCall(purpose, result != null, Duration.ofNanos(System.nanoTime() - startedNano));
+        if (result != null && result.totalTokens() > 0) {
+            metrics.tokens(result.model() == null ? ai.getModel() : result.model(), result.totalTokens());
+        }
     }
 
     private ChatResult parse(String body, String purpose) {
