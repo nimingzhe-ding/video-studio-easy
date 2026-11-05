@@ -14,7 +14,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class JobEventBusTest {
 
     private static JobEventBus bus() {
-        RedisSupport redis = new RedisSupport(new AppProperties(), null);
+        RedisSupport redis = org.mockito.Mockito.mock(RedisSupport.class);
         // 单机模式没有监听容器 bean，这里用空工厂模拟，验证构造器不会因此失败
         return new JobEventBus(redis, new DefaultListableBeanFactory().getBeanProvider(
                 org.springframework.data.redis.listener.RedisMessageListenerContainer.class));

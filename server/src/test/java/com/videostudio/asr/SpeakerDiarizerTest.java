@@ -15,6 +15,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -72,12 +73,13 @@ class SpeakerDiarizerTest {
     }
 
     @Test
-    void missingFileFallsBackInsteadOfThrowing() {
-        SpeakerDiarizer.Outcome outcome = new SpeakerDiarizer(defaults())
-                .assign(temp.resolve("nope.wav"), segments(3));
+    void missingFileFailsInsteadOfReturningUnlabeledSegments() {
+        // 生产版本去掉了「读不到音频就原样返回」的降级：缺文件属于基础设施故障，
+        // 必须让任务明确失败，而不是产出一份没有说话人信息的「成功」结果。
+        IllegalStateException error = assertThrows(IllegalStateException.class,
+                () -> new SpeakerDiarizer(defaults()).assign(temp.resolve("nope.wav"), segments(3)));
 
-        assertEquals(0, outcome.speakers());
-        assertEquals(3, outcome.segments().size(), "读不到音频也要原样返回片段");
+        assertTrue(error.getMessage().contains("读取音频失败"), "错误信息要指出是音频读取问题");
     }
 
     @Test
