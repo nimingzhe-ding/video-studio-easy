@@ -18,11 +18,15 @@ import com.videostudio.domain.AnalysisMode;
 import com.videostudio.domain.AnalysisReport;
 import com.videostudio.domain.ContextChunk;
 import com.videostudio.domain.JobEvent;
+import com.videostudio.domain.JobCheckpoint;
 import com.videostudio.domain.JobStage;
 import com.videostudio.domain.MediaAsset;
 import com.videostudio.domain.MediaKind;
 import com.videostudio.domain.TranscriptSegment;
 import com.videostudio.domain.VisualEvidence;
+import com.videostudio.infra.BudgetGuard;
+import com.videostudio.infra.JobEventBus;
+import com.videostudio.infra.JobMetrics;
 import com.videostudio.media.AudioExtractor;
 import com.videostudio.media.FrameExtractor;
 import com.videostudio.media.MediaInfo;
@@ -38,6 +42,7 @@ import com.videostudio.repository.JobRepository;
 import com.videostudio.repository.MediaRepository;
 import com.videostudio.repository.ReportRepository;
 import com.videostudio.repository.TranscriptRepository;
+import com.videostudio.repository.CheckpointRepository;
 import com.videostudio.repository.VisualRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -90,6 +95,10 @@ public class AnalysisPipeline {
     private final AgentProperties agentProps;
     private final AiProperties aiProps;
     private final AppProperties appProps;
+    private final JobEventBus eventBus;
+    private final JobMetrics metrics;
+    private final BudgetGuard budget;
+    private final CheckpointRepository checkpoints;
 
     public AnalysisPipeline(MediaRepository mediaRepository, JobRepository jobRepository,
                             JobEventRepository eventRepository, TranscriptRepository transcriptRepository,
@@ -99,7 +108,9 @@ public class AnalysisPipeline {
                             VisualEvidenceService visualService, ChunkEnricher chunkEnricher,
                             AnalysisAgent agent, EvidenceService evidenceService, DocxExporter docxExporter,
                             Storage storage, MediaObjects objects, VectorStore vectors,
-                            AgentProperties agentProps, AiProperties aiProps, AppProperties appProps) {
+                            AgentProperties agentProps, AiProperties aiProps, AppProperties appProps,
+                            JobEventBus eventBus, JobMetrics metrics, BudgetGuard budget,
+                            CheckpointRepository checkpoints) {
         this.mediaRepository = mediaRepository;
         this.jobRepository = jobRepository;
         this.eventRepository = eventRepository;
@@ -122,6 +133,10 @@ public class AnalysisPipeline {
         this.agentProps = agentProps;
         this.aiProps = aiProps;
         this.appProps = appProps;
+        this.eventBus = eventBus;
+        this.metrics = metrics;
+        this.budget = budget;
+        this.checkpoints = checkpoints;
     }
 
     /** 单个任务执行过程中的上下文，避免在方法间传递一长串参数 */
@@ -134,6 +149,12 @@ public class AnalysisPipeline {
         final List<String> warnings = new ArrayList<>();
         JobStage current = JobStage.QUEUED;
         long durationMs;
+        /** 上一个阶段的开始时刻，用于统计阶段耗时 */
+        java.time.Instant stageStarted = java.time.Instant.now();
+        /** 第几次尝试（断点续跑时会 >1），只用于诊断与上报 */
+        int attempts = 1;
+        /** 本次是否在续跑上一个未完成的断点 */
+        boolean resuming = false;
 
         Run(AnalysisJob job, MediaAsset asset, Path source) {
             this.job = job;
@@ -153,11 +174,29 @@ public class AnalysisPipeline {
         }
 
         void emit(JobStage stage, String type, String level, int progress, String message) {
+            long next = seq.incrementAndGet();
             JobEvent event = new JobEvent(0, stage, type, level, progress, message, null, java.time.Instant.now());
-            eventRepository.append(jobId, seq.incrementAndGet(), event);
+            eventRepository.append(jobId, next, event);
+            // 广播「有新事件」的信号：同实例的 SSE 立刻醒来，其他实例靠 Redis pub/sub 也立刻醒来。
+            // 事件本身以数据库为准，所以这里丢消息最多退化成一次轮询。
+            eventBus.publish(jobId, next);
         }
 
         void stage(JobStage stage, String message) {
+            // 换阶段时结算上一段耗时：能一眼看出瓶颈在转写、抽帧还是模型生成
+            java.time.Instant now = java.time.Instant.now();
+            if (stageStarted != null) {
+                metrics.stage(current.name().toLowerCase(java.util.Locale.ROOT),
+                        java.time.Duration.between(stageStarted, now));
+                // 进入新阶段说明上一阶段已经做完，这里落一次断点。
+                // 写失败只记日志：断点是「加速手段」，不能因为存储抖动把正常分析搞挂。
+                try {
+                    checkpoints.save(jobId, current, null, attempts);
+                } catch (RuntimeException e) {
+                    log.debug("写入断点失败 job={} stage={}: {}", jobId, current, e.getMessage());
+                }
+            }
+            stageStarted = now;
             current = stage;
             jobRepository.updateProgress(jobId, stage, stage.floor());
             emit(stage, JobEvent.TYPE_STAGE, "info", stage.floor(), message);
@@ -184,21 +223,63 @@ public class AnalysisPipeline {
             }
         }
         Run run = new Run(job, asset, source);
+        java.time.Instant started = java.time.Instant.now();
+        metrics.jobStarted(job.mode().name());
+        // 把 jobId 绑到线程上：模型网关记账、日志 MDC 都靠它，省去逐层传参
+        budget.begin(jobId);
+        budget.enter(jobId);
+        org.slf4j.MDC.put("jobId", Long.toString(jobId));
+        String status = "failed";
         try {
             jobRepository.markRunning(jobId);
             execute(run, job, asset, source);
             jobRepository.markSucceeded(jobId);
             run.emit(JobStage.DONE, JobEvent.TYPE_DONE, "info", 100, "分析完成");
+            // DONE 是终态，不走 stage()，所以断点要在这里显式落一次；
+            // 否则断点会永远停在最后一个真实阶段，重试时白跑一遍报告
+            try {
+                checkpoints.save(jobId, JobStage.DONE, null, run.attempts);
+            } catch (RuntimeException e) {
+                log.debug("写入完成断点失败 job={}: {}", jobId, e.getMessage());
+            }
+            status = "succeeded";
         } catch (Exception e) {
             log.error("任务 {} 失败", jobId, e);
             String message = Texts.oneLine(e.getMessage() == null ? e.toString() : e.getMessage(), 300);
             jobRepository.markFailed(jobId, message);
             run.emit(JobStage.FAILED, JobEvent.TYPE_ERROR, "error", 100, "分析失败：" + message);
+        } finally {
+            // 顺序很重要：先结算阶段耗时，再清上下文，最后回收记账
+            if (run.stageStarted != null) {
+                metrics.stage(run.current.name().toLowerCase(java.util.Locale.ROOT),
+                        java.time.Duration.between(run.stageStarted, java.time.Instant.now()));
+            }
+            metrics.jobFinished(job.mode().name(), status, java.time.Duration.between(started, java.time.Instant.now()));
+            org.slf4j.MDC.remove("jobId");
+            budget.leave();
+            budget.end(jobId);
         }
     }
 
     private void execute(Run run, AnalysisJob job, MediaAsset asset, Path source) throws Exception {
+        // 断点必须在任何 stage() 之前读：stage() 自己也会写断点，
+        // 放到后面读会让「刚提交的新任务」误判成续跑（实测踩过这个坑）。
+        JobStage resumeFrom = checkpoints.find(run.jobId)
+                .filter(checkpoint -> checkpoint.stage() != JobStage.DONE)
+                .map(JobCheckpoint::stage)
+                .orElse(null);
+        run.resuming = resumeFrom != null;
+        if (resumeFrom != null) {
+            run.attempts = checkpoints.find(run.jobId)
+                    .map(checkpoint -> Math.max(1, checkpoint.attempts() + 1))
+                    .orElse(2);
+        }
         run.stage(JobStage.PROBE, "解析媒体信息");
+        if (resumeFrom != null) {
+            run.emit(JobStage.PROBE, JobEvent.TYPE_LOG, "info", JobStage.PROBE.floor(),
+                    "断点续跑（第 %d 次）：上次完成到「%s」，已完成的阶段会跳过"
+                            .formatted(run.attempts, resumeFrom.label()));
+        }
         if (!java.nio.file.Files.isReadable(source)) {
             throw new IllegalStateException("源文件不存在或不可读: " + source);
         }
@@ -209,7 +290,12 @@ public class AnalysisPipeline {
                         info.width() == null ? "音频" : info.width() + "x" + info.height()));
 
         // ---- 证据复用：转写与 OCR 只取决于素材内容，与本次目标无关，同素材已有成功任务就直接拿来用
-        EvidenceService.Reused reused = evidenceService.findReusable(asset.id(), run.jobId);
+        // 断点续跑时允许复用本任务自己的证据：重试沿用同一个 jobId，
+        // 上次失败前已落库的转写与画面就在自己名下，排除自己等于每次重试都从零开始。
+        if (run.resuming) {
+            run.warn("检测到未完成的断点（第 %d 次尝试），继续复用已完成的证据".formatted(run.attempts));
+        }
+        EvidenceService.Reused reused = evidenceService.findReusable(asset.id(), run.jobId, run.resuming);
         if (reused.present() && !evidenceService.framesAvailable(reused.visuals())) {
             run.warn("历史关键帧文件已被清理，本次重新抽取画面证据");
             reused = new EvidenceService.Reused(reused.sourceJobId(), reused.segments(), List.of(), List.of(),

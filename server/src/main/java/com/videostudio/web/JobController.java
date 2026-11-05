@@ -4,6 +4,8 @@ import com.videostudio.common.ApiException;
 import com.videostudio.common.ApiResponse;
 import com.videostudio.domain.AnalysisJob;
 import com.videostudio.domain.AnalysisMode;
+import com.videostudio.config.RateLimitProperties;
+import com.videostudio.infra.RateLimiter;
 import com.videostudio.service.CleanupService;
 import com.videostudio.service.JobService;
 import com.videostudio.repository.JobEventRepository;
@@ -36,10 +38,13 @@ public class JobController {
     private final TranscriptRepository transcriptRepository;
     private final VisualRepository visualRepository;
     private final CleanupService cleanupService;
+    private final RateLimiter limiter;
+    private final RateLimitProperties rateLimits;
 
     public JobController(JobService jobService, JobRepository jobRepository, JobEventRepository eventRepository,
                          ReportRepository reportRepository, TranscriptRepository transcriptRepository,
-                         VisualRepository visualRepository, CleanupService cleanupService) {
+                         VisualRepository visualRepository, CleanupService cleanupService,
+                         RateLimiter limiter, RateLimitProperties rateLimits) {
         this.cleanupService = cleanupService;
         this.jobService = jobService;
         this.jobRepository = jobRepository;
@@ -47,6 +52,8 @@ public class JobController {
         this.reportRepository = reportRepository;
         this.transcriptRepository = transcriptRepository;
         this.visualRepository = visualRepository;
+        this.limiter = limiter;
+        this.rateLimits = rateLimits;
     }
 
     public record SubmitRequest(long assetId, String goal, String mode, String title) {
@@ -57,6 +64,9 @@ public class JobController {
         if (request.assetId() <= 0) {
             throw new ApiException("缺少 assetId");
         }
+        // 按素材限流而不是按 IP：同一用户可能换网络，但同一素材被反复提交一定是异常行为
+        limiter.require("rate:submit:" + request.assetId(), rateLimits.getSubmitPerMinute(),
+                java.time.Duration.ofMinutes(1), "该素材提交分析过于频繁");
         AnalysisMode mode = parseMode(request.mode());
         return ApiResponse.success(jobService.submit(request.assetId(), mode, request.goal(), request.title()));
     }
@@ -118,6 +128,12 @@ public class JobController {
     @GetMapping("/{id}/evidence")
     public ApiResponse<?> evidence(@PathVariable long id) {
         return ApiResponse.success(visualRepository.listByJob(id));
+    }
+
+    /** 失败重试：接着原任务走，已完成的转写与抽帧会被复用 */
+    @PostMapping("/{id}/retry")
+    public ApiResponse<AnalysisJob> retry(@PathVariable long id) {
+        return ApiResponse.success(jobService.retry(id));
     }
 
     @PostMapping("/{id}/cancel")

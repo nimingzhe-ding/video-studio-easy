@@ -73,11 +73,23 @@ public class EvidenceService {
      * <p>用「成功且不是自己」的任务；优先返回同时有转写与画面证据的那一个。
      */
     public Reused findReusable(long assetId, long selfJobId) {
+        return findReusable(assetId, selfJobId, false);
+    }
+
+    /**
+     * 找可复用的证据。
+     *
+     * @param allowSelf 允许复用本任务自己的证据。断点续跑时必须为 true：
+     *                  重试沿用同一个 jobId，上次失败前已经落库的转写与画面就在自己名下，
+     *                  排除自己的话等于每次重试都从零开始，断点就白记了。
+     */
+    public Reused findReusable(long assetId, long selfJobId, boolean allowSelf) {
         List<AnalysisJob> candidates;
         try {
             candidates = jobRepository.listByAsset(assetId).stream()
-                    .filter(job -> job.id() != selfJobId)
-                    .filter(job -> job.status() == com.videostudio.domain.JobStatus.SUCCEEDED)
+                    .filter(job -> allowSelf || job.id() != selfJobId)
+                    .filter(job -> job.id() == selfJobId
+                            || job.status() == com.videostudio.domain.JobStatus.SUCCEEDED)
                     .toList();
         } catch (RuntimeException e) {
             log.warn("查询可复用证据失败，退化为全量计算：{}", e.getMessage());

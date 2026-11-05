@@ -7,6 +7,7 @@ import com.videostudio.domain.AnalysisMode;
 import com.videostudio.domain.ContextChunk;
 import com.videostudio.domain.TranscriptSegment;
 import com.videostudio.domain.VisualEvidence;
+import com.videostudio.infra.BudgetGuard;
 import com.videostudio.llm.LlmGateway;
 import com.videostudio.retrieval.HybridRetriever;
 import org.slf4j.Logger;
@@ -34,12 +35,26 @@ public class AnalysisAgent {
     private final PromptLibrary prompts;
     private final HybridRetriever retriever;
     private final AgentProperties props;
+    /** 可为空的成本护栏：单测里不需要它 */
+    private final BudgetGuard budget;
 
     public AnalysisAgent(LlmGateway llm, PromptLibrary prompts, HybridRetriever retriever, AgentProperties props) {
+        this(llm, prompts, retriever, props, null);
+    }
+
+    /**
+     * 容器使用的构造器。
+     * <p>类里有多个构造器时 Spring 不会自动挑，必须显式标注，否则启动直接报
+     * 「No default constructor found」——这个错误直到真正打包启动才暴露，编译期查不出来。
+     */
+    @org.springframework.beans.factory.annotation.Autowired
+    public AnalysisAgent(LlmGateway llm, PromptLibrary prompts, HybridRetriever retriever, AgentProperties props,
+                         BudgetGuard budget) {
         this.llm = llm;
         this.prompts = prompts;
         this.retriever = retriever;
         this.props = props;
+        this.budget = budget;
     }
 
     public record Request(long jobId, String goal, AnalysisMode mode, List<TranscriptSegment> transcripts,
@@ -58,6 +73,8 @@ public class AnalysisAgent {
             return offline(request, intent, mode, progress);
         }
 
+        // 三重上限：轮次、墙钟、token 预算。前两者防「跑太久」，后者防「花太多」——
+        // 提示词写错导致循环调用时，只有 token 预算能真正止损。
         Instant deadline = Instant.now().plus(Duration.ofMillis(Math.max(30_000, props.getMaxDurationMs())));
         List<HybridRetriever.Hit> hits = retriever.search(request.jobId(), intent.query(), request.chunks(),
                 request.transcripts(), request.visuals());
@@ -79,6 +96,11 @@ public class AnalysisAgent {
         int rounds = 0;
         int maxRounds = Math.max(1, props.getMaxRounds());
         while (rounds < maxRounds && Instant.now().isBefore(deadline)) {
+            if (budget != null && budget.exceeded(request.jobId())) {
+                progress.accept("已超出本次任务预算，停止继续生成");
+                log.warn("job {} 超出预算，提前结束于第 {} 轮", request.jobId(), rounds);
+                break;
+            }
             rounds++;
             progress.accept("第 %d 轮：生成结构化产物".formatted(rounds));
             draft = execute(request, mode, plan, evidenceSegments, evidenceVisuals, draft, critique);

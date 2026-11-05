@@ -148,3 +148,13 @@ CREATE TABLE IF NOT EXISTS upload_chunk (
     created_at    DATETIME(3)  NOT NULL,
     PRIMARY KEY (upload_id, chunk_index)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 任务断点：失败重试时不必从头再跑（转写与抽帧是长视频分析里最贵的一步）
+CREATE TABLE IF NOT EXISTS job_checkpoint (
+    job_id       BIGINT       NOT NULL PRIMARY KEY,
+    stage        VARCHAR(32)  NOT NULL,
+    payload_json LONGTEXT,
+    attempts     INT          NOT NULL DEFAULT 0,
+    updated_at   DATETIME(3)  NOT NULL DEFAULT NOW(3),
+    KEY idx_checkpoint_stage (stage)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

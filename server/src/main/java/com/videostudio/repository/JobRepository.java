@@ -90,6 +90,18 @@ public class JobRepository {
                 """, JobStatus.FAILED.name(), JobStage.FAILED.name(), error, Sql.now(), Sql.now(), id);
     }
 
+    /**
+     * 把失败/取消的任务放回队列。
+     * <p>故意不清空 stage 与 progress：前端能看到「上次跑到哪一步」，
+     * 重试时也会从那里继续（证据复用会跳过已完成的转写与抽帧）。
+     */
+    public void retry(long id) {
+        jdbc.update("""
+                UPDATE analysis_job SET status = ?, error = NULL, updated_at = ?, finished_at = NULL
+                WHERE id = ?
+                """, JobStatus.PENDING.name(), Sql.now(), id);
+    }
+
     public void markCanceled(long id) {
         jdbc.update("""
                 UPDATE analysis_job SET status = ?, updated_at = ?, finished_at = ? WHERE id = ?

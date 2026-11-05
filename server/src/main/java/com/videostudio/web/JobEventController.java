@@ -7,6 +7,8 @@ import com.videostudio.config.RealtimeProperties;
 import com.videostudio.domain.AnalysisJob;
 import com.videostudio.domain.JobEvent;
 import com.videostudio.domain.JobStatus;
+import com.videostudio.infra.JobEventBus;
+import com.videostudio.infra.RedisSupport;
 import com.videostudio.retrieval.VectorStore;
 import com.videostudio.storage.MediaObjects;
 import com.videostudio.repository.JobEventRepository;
@@ -27,7 +29,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -53,16 +57,21 @@ public class JobEventController {
     private final RealtimeProperties realtime;
     private final MediaObjects objects;
     private final VectorStore vectors;
+    private final JobEventBus eventBus;
+    private final RedisSupport redis;
 
     public JobEventController(JobRepository jobRepository, JobEventRepository eventRepository,
                               AiProperties ai, RealtimeProperties realtime,
-                              MediaObjects objects, VectorStore vectors) {
+                              MediaObjects objects, VectorStore vectors,
+                              JobEventBus eventBus, RedisSupport redis) {
         this.jobRepository = jobRepository;
         this.eventRepository = eventRepository;
         this.ai = ai;
         this.realtime = realtime;
         this.objects = objects;
         this.vectors = vectors;
+        this.eventBus = eventBus;
+        this.redis = redis;
     }
 
     @GetMapping("/{id}/stream")
@@ -87,8 +96,20 @@ public class JobEventController {
             return emitter;
         }
 
+        // 事件写入时会广播唤醒，所以这里不必高频轮询：
+        // 正常情况被外部唤醒（毫秒级），信号丢失时靠 3 秒一次的兜底轮询补上。
+        AtomicBoolean closed = new AtomicBoolean(false);
+        Semaphore signal = new Semaphore(0);
+        AutoCloseable subscription = eventBus.subscribe(id, signal::release);
+
         PUMPS.scheduleWithFixedDelay(() -> {
+            if (closed.get()) {
+                return;
+            }
             try {
+                // 有信号就立刻醒；没有就最多等 3 秒（兜底，防止广播丢失）
+                signal.tryAcquire(3, TimeUnit.SECONDS);
+                signal.drainPermits();
                 List<JobEvent> fresh = eventRepository.list(id, cursor.get(), 200);
                 for (JobEvent event : fresh) {
                     if (!send(emitter, "event", event)) {
@@ -104,14 +125,36 @@ public class JobEventController {
                             "error", current.error() == null ? "" : current.error()));
                     emitter.complete();
                 }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
             } catch (RuntimeException e) {
                 log.debug("SSE 轮询任务 {} 失败: {}", id, e.getMessage());
             }
-        }, 300, 700, TimeUnit.MILLISECONDS);
+        }, 200, 100, TimeUnit.MILLISECONDS);
 
-        emitter.onCompletion(() -> log.debug("SSE 任务 {} 结束", id));
-        emitter.onTimeout(emitter::complete);
+        emitter.onCompletion(() -> {
+            closed.set(true);
+            closeQuietly(subscription);
+            log.debug("SSE 任务 {} 结束", id);
+        });
+        emitter.onTimeout(() -> {
+            closed.set(true);
+            closeQuietly(subscription);
+            emitter.complete();
+        });
+        emitter.onError(e -> {
+            closed.set(true);
+            closeQuietly(subscription);
+        });
         return emitter;
+    }
+
+    private static void closeQuietly(AutoCloseable closeable) {
+        try {
+            closeable.close();
+        } catch (Exception e) {
+            // 注销订阅失败不影响连接关闭
+        }
     }
 
     private boolean send(SseEmitter emitter, String name, Object payload) {
@@ -141,6 +184,7 @@ public class JobEventController {
         info.put("objectStorageEnabled", objects.enabled());
         info.put("vectorStore", vectors.provider());
         info.put("vectorStoreEnabled", vectors.enabled());
+        info.put("redisEnabled", redis.available());
         info.put("status", JobStatus.values().length);
         return ApiResponse.success(info);
     }
