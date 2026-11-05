@@ -1,172 +1,157 @@
-# 完整部署：应用 + MySQL + Redis + MinIO + Milvus（含 etcd 依赖）
-#
-# 用法：
-#   cp .env.example .env       # 改密码与模型密钥
-#   docker compose up -d --build
-#   打开 http://localhost:9090
-#
-# 想只跑「最小演示」？那就不需要这个文件——直接 `cd server && mvn spring-boot:run`，
-# 用的是 H2 文件库 + 本地磁盘 + 内存检索，一个中间件都不依赖。
-name: video-studio-easy
-
+name: video-studio
 services:
   mysql:
     image: mysql:8.4
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root123}
-      MYSQL_DATABASE: ${MYSQL_DATABASE:-video_studio}
-      MYSQL_USER: ${MYSQL_USER:-vs}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-vs123}
-      TZ: Asia/Shanghai
-    command:
-      - --character-set-server=utf8mb4
-      - --collation-server=utf8mb4_unicode_ci
-    ports:
-      - "${MYSQL_PORT:-3306}:3306"
-    volumes:
-      - mysql-data:/var/lib/mysql
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD}
+      TZ: UTC
+      MYSQL_DATABASE: video_studio
+      MYSQL_USER: studio
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?Set MYSQL_PASSWORD}
+    volumes: [mysql-data:/var/lib/mysql]
     healthcheck:
-      # 首次启动要初始化数据目录，20 秒内连不上是正常的；用 mysqladmin ping 而不是 TCP 探测，
-      # 因为端口开了但数据库还没 ready 时连上去会直接报错
-      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p${MYSQL_ROOT_PASSWORD:-root123}"]
+      test: ["CMD-SHELL","mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
       interval: 5s
-      timeout: 5s
-      retries: 20
-      start_period: 20s
+      retries: 30
+      start_period: 30s
+    networks: [backend]
 
   redis:
     image: redis:7.4-alpine
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes"]
-    ports:
-      - "${REDIS_PORT:-6379}:6379"
-    volumes:
-      - redis-data:/data
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD}
+    command: [sh,-c,'exec redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD"']
+    volumes: [redis-data:/data]
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL",'REDISCLI_AUTH="$$REDIS_PASSWORD" redis-cli ping | grep -q PONG']
       interval: 5s
-      timeout: 3s
-      retries: 10
+      retries: 20
+    networks: [backend]
 
-  # MinIO 官方镜像已从 Docker Hub 下架（minio/minio 与 quay.io/minio/minio 都返回
-  # manifest unknown / access denied），这里用社区维护的 pgsty/minio，接口与 mc 兼容。
   minio:
-    image: ${MINIO_IMAGE:-pgsty/minio:latest}
+    image: pgsty/silo:RELEASE.2026-10-26T00-00-00Z
     restart: unless-stopped
-    command: ["server", "/data", "--console-address", ":9001"]
+    command: [server,/data,--console-address,":9001"]
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
-    ports:
-      - "${MINIO_PORT:-9000}:9000"
-      - "${MINIO_CONSOLE_PORT:-9001}:9001"
-    volumes:
-      - minio-data:/data
-    healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
-      interval: 5s
-      timeout: 5s
-      retries: 20
-      start_period: 10s
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD}
+    volumes: [s3-data:/data]
+    networks: [backend]
 
-  etcd:
-    image: quay.io/coreos/etcd:v3.5.18
-    restart: unless-stopped
+  minio-init:
+    image: pgsty/mc:RELEASE.2026-10-26T00-00-00Z
+    depends_on: [minio]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:?Set S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:?Set S3_SECRET_KEY}
+      S3_BUCKET: video-studio
+    volumes: [./docker/minio-policy.json:/config/policy.json:ro]
+    entrypoint: ["/bin/sh","-ec"]
     command:
-      - etcd
-      - -advertise-client-urls=http://127.0.0.1:2379
-      - -listen-client-urls=http://0.0.0.0:2379
-      - --data-dir=/etcd
-    environment:
-      ETCD_AUTO_COMPACTION_MODE: revision
-      ETCD_AUTO_COMPACTION_RETENTION: "1000"
-      ETCD_QUOTA_BACKEND_BYTES: "4294967296"
-      ETCD_SNAPSHOT_COUNT: "50000"
-    volumes:
-      - etcd-data:/etcd
-    healthcheck:
-      test: ["CMD", "etcdctl", "endpoint", "health"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
+      - |
+        until mc alias set studio http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" >/dev/null 2>&1; do sleep 2; done
+        mc mb --ignore-existing studio/$$S3_BUCKET
+        mc admin user add studio "$$S3_ACCESS_KEY" "$$S3_SECRET_KEY"
+        sed "s|__BUCKET__|$$S3_BUCKET|g" /config/policy.json > /tmp/policy.json
+        mc admin policy create studio studio-app /tmp/policy.json
+        mc admin policy attach studio studio-app --user "$$S3_ACCESS_KEY"
+    networks: [backend]
 
-  milvus:
-    image: milvusdb/milvus:v2.5.4
+  qdrant:
+    image: qdrant/qdrant:v1.18.2
     restart: unless-stopped
-    command: ["milvus", "run", "standalone"]
-    depends_on:
-      etcd:
-        condition: service_healthy
-      minio:
-        condition: service_healthy
     environment:
-      ETCD_ENDPOINTS: etcd:2379
-      MINIO_ADDRESS: minio:9000
-      MINIO_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
-      COMMON_STORAGETYPE: minio
-    ports:
-      - "${MILVUS_PORT:-19530}:19530"
-      - "${MILVUS_HTTP_PORT:-9091}:9091"
+      QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY:?Set QDRANT_API_KEY}
+    volumes: [qdrant-data:/qdrant/storage]
+    networks: [backend]
+
+  rmqnamesrv:
+    image: apache/rocketmq:5.3.4
+    restart: unless-stopped
+    environment:
+      JAVA_OPT_EXT: "-Xms256m -Xmx256m"
+    command: sh mqnamesrv
+    networks: [backend]
+
+  rmqbroker:
+    image: apache/rocketmq:5.3.4
+    restart: unless-stopped
+    depends_on: [rmqnamesrv]
+    environment:
+      JAVA_OPT_EXT: "-Xms512m -Xmx512m -Xmn256m"
+    command: sh mqbroker -n rmqnamesrv:9876 -c /home/rocketmq/broker.conf
     volumes:
-      - milvus-data:/var/lib/milvus
-    healthcheck:
-      # curl 在 milvus 镜像里没有，用自带的 grpc 健康检查脚本
-      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
-      interval: 15s
-      timeout: 10s
-      retries: 20
-      start_period: 60s
+      - ./docker/rocketmq/broker.conf:/home/rocketmq/broker.conf:ro
+      - rocketmq-data:/home/rocketmq/store
+      - rocketmq-logs:/home/rocketmq/logs
+    networks: [backend]
+
+  rocketmq-init:
+    image: apache/rocketmq:5.3.4
+    depends_on: [rmqbroker]
+    environment:
+      JAVA_OPT_EXT: "-Xms128m -Xmx128m"
+    entrypoint: ["/bin/sh","-ec"]
+    command:
+      - |
+        until sh mqadmin updateTopic -n rmqnamesrv:9876 -b rmqbroker:10911 -t video-analysis -r 8 -w 8; do sleep 3; done
+    networks: [backend]
 
   app:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile
+    build: {context: .,dockerfile: docker/Dockerfile}
     restart: unless-stopped
     depends_on:
-      mysql:
-        condition: service_healthy
-      redis:
-        condition: service_started
-      minio:
-        condition: service_healthy
-      milvus:
-        condition: service_started
+      mysql: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      minio-init: {condition: service_completed_successfully}
+      rocketmq-init: {condition: service_completed_successfully}
+      qdrant: {condition: service_started}
     environment:
-      # 数据库：schema.sql 是 MySQL 方言，启动时自动建表
-      DB_URL: jdbc:mysql://mysql:3306/${MYSQL_DATABASE:-video_studio}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai&characterEncoding=utf8
-      DB_USERNAME: ${MYSQL_USER:-vs}
-      DB_PASSWORD: ${MYSQL_PASSWORD:-vs123}
-      REDIS_ENABLED: "true"
+      DB_URL: jdbc:mysql://mysql:3306/video_studio?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC&characterEncoding=utf8
+      DB_USERNAME: studio
+      DB_PASSWORD: ${MYSQL_PASSWORD}
       REDIS_HOST: redis
-      OBJECT_STORAGE_ENABLED: "true"
-      MINIO_ENDPOINT: http://minio:9000
-      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
-      MINIO_BUCKET: ${MINIO_BUCKET:-video-studio}
-      VECTOR_ENABLED: "true"
-      MILVUS_HOST: milvus
-      MILVUS_PORT: "19530"
-      # 模型：留空则整条流水线离线运行（本地 whisper + tesseract + 确定性模板）
-      AI_API_KEY: ${AI_API_KEY:-}
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      ROCKETMQ_NAME_SERVER: rmqnamesrv:9876
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_API_KEY: ${QDRANT_API_KEY}
+      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-1024}
+      AI_API_KEY: ${AI_API_KEY:?Set AI_API_KEY}
       AI_BASE_URL: ${AI_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
       LLM_MODEL: ${LLM_MODEL:-qwen-plus}
+      ASR_URL: ${ASR_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1/audio/transcriptions}
+      ASR_MODEL: ${ASR_MODEL:-qwen-audio-asr}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-v3}
-      VISION_CAPTION_ENABLED: ${VISION_CAPTION_ENABLED:-false}
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+      AUTH_ADMIN_USERNAME: ${AUTH_ADMIN_USERNAME:?Set AUTH_ADMIN_USERNAME}
+      AUTH_ADMIN_PASSWORD: ${AUTH_ADMIN_PASSWORD:?Set AUTH_ADMIN_PASSWORD}
+      AUTH_REGISTRATION_ENABLED: ${AUTH_REGISTRATION_ENABLED:-false}
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-true}
+      REALTIME_ENABLED: ${REALTIME_ENABLED:-false}
+      REALTIME_URL: ${REALTIME_URL:-}
       REALTIME_API_KEY: ${REALTIME_API_KEY:-}
-      WHISPER_MODEL_URL: ${WHISPER_MODEL_URL:-}
+      VISION_CAPTION_ENABLED: ${VISION_CAPTION_ENABLED:-false}
       TZ: Asia/Shanghai
-    ports:
-      - "${APP_PORT:-9090}:9090"
-    volumes:
-      # 模型与本地工作副本都在这个卷里；whisper 模型首次启动时自动下载
-      - app-data:/data
-
+    ports: ["${APP_BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-9090}:9090"]
+    read_only: true
+    tmpfs: ["/tmp:uid=10001,gid=10001,mode=1770","/work:uid=10001,gid=10001,mode=0770,size=8g"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    networks: [backend]
+networks:
+  backend:
 volumes:
   mysql-data:
   redis-data:
-  minio-data:
-  etcd-data:
-  milvus-data:
-  app-data:
+  s3-data:
+  qdrant-data:
+  rocketmq-data:
+  rocketmq-logs:

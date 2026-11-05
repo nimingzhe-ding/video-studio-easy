@@ -31,3 +31,6 @@ client/.vite/
 .env
 .env.local
 *.local
+
+client/test-results/
+client/playwright-report/

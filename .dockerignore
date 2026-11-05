@@ -1,0 +1,11 @@
+.git
+.tools
+.m2
+.env
+.env.*
+!.env.example
+**/node_modules
+**/target
+**/dist
+**/data
+**/*.log

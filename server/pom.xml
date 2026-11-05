@@ -13,7 +13,7 @@
 
     <groupId>com.videostudio</groupId>
     <artifactId>video-studio-easy-server</artifactId>
-    <version>0.1.0</version>
+    <version>1.0.0</version>
     <name>video-studio-easy-server</name>
     <description>长视频 / 长音频理解与文档生成服务</description>
 
@@ -22,7 +22,7 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <poi.version>5.4.1</poi.version>
         <minio.version>8.5.17</minio.version>
-        <milvus.version>2.4.9</milvus.version>
+        <rocketmq.version>2.3.0</rocketmq.version>
     </properties>
 
     <dependencies>
@@ -42,7 +42,7 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-websocket</artifactId>
         </dependency>
-        <!-- Redis：只用于可丢失的缓存（任务列表、运行状态），不可用时整站仍能工作 -->
+        <!-- 必需的共享会话、锁与配额 -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-redis</artifactId>
@@ -62,22 +62,21 @@
             <scope>runtime</scope>
         </dependency>
         <dependency>
-            <groupId>com.h2database</groupId>
-            <artifactId>h2</artifactId>
-            <scope>runtime</scope>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
         </dependency>
-        <!-- MinIO / S3：媒体与关键帧的对象存储；未配置时自动回退本地磁盘 -->
+        <dependency><groupId>org.flywaydb</groupId><artifactId>flyway-mysql</artifactId></dependency>
+        <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-security</artifactId></dependency>
+        <dependency><groupId>org.springframework.session</groupId><artifactId>spring-session-data-redis</artifactId></dependency>
+        <dependency><groupId>org.apache.rocketmq</groupId><artifactId>rocketmq-spring-boot-starter</artifactId><version>${rocketmq.version}</version></dependency>
+        <dependency><groupId>org.redisson</groupId><artifactId>redisson</artifactId><version>3.52.0</version></dependency>
+        <!-- S3 兼容对象存储是二进制数据的唯一持久来源 -->
         <dependency>
             <groupId>io.minio</groupId>
             <artifactId>minio</artifactId>
             <version>${minio.version}</version>
         </dependency>
-        <!-- Milvus：跨任务的向量检索；连不上时回退内存余弦 -->
-        <dependency>
-            <groupId>io.milvus</groupId>
-            <artifactId>milvus-sdk-java</artifactId>
-            <version>${milvus.version}</version>
-        </dependency>
+        <!-- 保留报告导出；向量索引通过 Qdrant REST API 访问 -->
         <dependency>
             <groupId>org.apache.poi</groupId>
             <artifactId>poi-ooxml</artifactId>
@@ -88,6 +87,9 @@
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
         </dependency>
+        <dependency><groupId>org.springframework.security</groupId><artifactId>spring-security-test</artifactId><scope>test</scope></dependency>
+        <dependency><groupId>org.testcontainers</groupId><artifactId>junit-jupiter</artifactId><scope>test</scope></dependency>
+        <dependency><groupId>org.testcontainers</groupId><artifactId>mysql</artifactId><scope>test</scope></dependency>
     </dependencies>
 
     <build>
