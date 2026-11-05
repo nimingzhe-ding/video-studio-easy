@@ -62,6 +62,10 @@ COPY --from=whisper /out/bin/whisper-cli /opt/whisper/whisper-cli
 # 启动时自检一次：编出来的二进制跑不起来时，问题应该在这行暴露，而不是等第一次转写
 RUN /opt/whisper/whisper-cli --help > /dev/null 2>&1 || (echo "whisper-cli 无法执行" && exit 1)
 
+# 工作目录必须是 /app：WebConfig 用相对路径 client/dist 找前端产物，
+# 工作目录留在 / 时会去找 /client/dist，页面就变成 404
+WORKDIR /app
+
 COPY --from=server /build/target/video-studio-easy-server-*.jar /app/app.jar
 # 前端产物放在 jar 同级，WebConfig 会把它当作静态资源目录
 COPY --from=client /build/client/dist /app/client/dist

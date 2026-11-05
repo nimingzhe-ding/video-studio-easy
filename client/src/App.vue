@@ -617,6 +617,18 @@ function toggleTheme() {
                 {{ runtime.visionCaptionEnabled ? '已开启' : '关闭' }}
               </span>
             </div>
+            <div class="row" :title="'媒体源文件、关键帧与报告会同步到这个对象存储'">
+              <span>对象存储</span><div class="grow" />
+              <span class="badge" :class="runtime.objectStorageEnabled ? 'accent' : ''">
+                {{ runtime.objectStorageEnabled ? (runtime.objectStorage || '已启用') : '本地目录' }}
+              </span>
+            </div>
+            <div class="row" :title="'语义检索优先走向量库，连不上时自动退回内存余弦与关键词'">
+              <span>向量检索</span><div class="grow" />
+              <span class="badge" :class="runtime.vectorStoreEnabled ? 'accent' : ''">
+                {{ runtime.vectorStoreEnabled ? (runtime.vectorStore || '已启用') : '内存余弦' }}
+              </span>
+            </div>
             <div class="hint">未配置 AI_API_KEY 时，转写、OCR、检索仍可用，报告走离线模板。</div>
           </div>
         </div>

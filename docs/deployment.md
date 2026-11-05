@@ -100,6 +100,22 @@ environment:
 
 典型的报错是 `failed to check blob bucket exist` 与 `find no available datacoord`。
 
+### 4.4 运行镜像里必须 `WORKDIR /app`
+
+前端产物是 `COPY --from=client /build/client/dist /app/client/dist`，
+而 `config/WebConfig.java` 用**相对路径**找它：
+
+```java
+File[] candidates = { new File("../client/dist"), new File("client/dist"), new File("../../client/dist") };
+```
+
+镜像里如果忘了 `WORKDIR /app`，工作目录是 `/`，`client/dist` 就解析成 `/client/dist`，
+结果 API 全好、页面却返回 `NoResourceFoundException`——**404 只在浏览器里出现，
+日志一片正常**，很容易误判成前端没打包进去。
+
+同时这也和「本地盘是工作区」的约定一致：`STORAGE_ROOT=/data/media` 是绝对路径，
+但 `client/dist`、`./data/db` 这类默认值都依赖工作目录。
+
 ## 5. 只维护一份 schema
 
 `server/src/main/resources/db/schema.sql` 是纯 MySQL 方言（`LONGTEXT` / `DATETIME(3)` /
@@ -122,4 +138,7 @@ environment:
 - 上传 76 秒视频跑完整条流水线：转写 3 段、关键帧 4 条、分块 1 个；
 - Milvus 首次写入时按实际向量维度（16）建集合，检索时按 `job_id` 过滤；
 - MinIO 桶里能看到 `assets/1/source.mp4`、`assets/1/frames/job-1/*.jpg`、`assets/1/report/report-1.docx`；
-- 删除任务后，该任务在桶里的关键帧与报告被一并清理（`deleteByPrefix`）。
+- 删除任务后，该任务在桶里的关键帧与报告被一并清理（`deleteByPrefix`）；
+- 用 mock 模型（16 维向量）复跑后，Milvus 里出现 `j-7-c-0`，删除该任务后只剩 `j-3-c-0`——
+  说明按 `job_id` 过滤的删除不会误伤其他任务；
+- 运行环境的三个开关在界面上可见：`对象存储 minio`、`向量检索 milvus`、`画面描述 关闭`。

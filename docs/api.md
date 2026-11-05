@@ -397,6 +397,10 @@ Content-Disposition: attachment; filename*=UTF-8''video-studio-15.srt
 前端用来提示「当前未配置大模型」。`visionCaptionEnabled` 同时受 `cloudEnabled()` 与
 `VISION_CAPTION_ENABLED` 约束——没有 key 时即使打开开关也不会真的调模型。
 
+界面左侧的「运行环境」卡片就是这四个开关的可视化：大模型、向量模型、实时对话、画面描述，
+再加对象存储与向量检索两行。容器模式下会显示 `minio` 与 `milvus`，单机模式下显示
+`本地目录` 与 `内存余弦`——**一眼能看出这次跑的是哪套实现**，省得去翻日志。
+
 > 该接口曾经有两个坑：把配置类写成方法参数（Spring MVC 会按请求参数重新绑定，永远读不到真实配置），
 > 以及返回裸 `Map` 没有包 `ApiResponse`（前端统一取 `payload.data`，拿到的永远是 `undefined`）。
 > 现在配置走构造器注入、响应统一包一层。
