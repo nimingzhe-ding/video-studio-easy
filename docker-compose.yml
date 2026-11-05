@@ -49,15 +49,15 @@ services:
       S3_ACCESS_KEY: ${S3_ACCESS_KEY:?Set S3_ACCESS_KEY}
       S3_SECRET_KEY: ${S3_SECRET_KEY:?Set S3_SECRET_KEY}
       S3_BUCKET: video-studio
-    volumes: [./docker/minio-policy.json:/config/policy.json:ro]
     entrypoint: ["/bin/sh","-ec"]
     command:
       - |
         until mc alias set studio http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" >/dev/null 2>&1; do sleep 2; done
         mc mb --ignore-existing studio/$$S3_BUCKET
-        mc admin user add studio "$$S3_ACCESS_KEY" "$$S3_SECRET_KEY"
-        sed "s|__BUCKET__|$$S3_BUCKET|g" /config/policy.json > /tmp/policy.json
-        mc admin policy create studio studio-app /tmp/policy.json
+        mc admin user add studio "$$S3_ACCESS_KEY" "$$S3_SECRET_KEY" || true
+        # 该镜像没有 sed，策略文件用 printf 生成，避免依赖外部工具
+        printf '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:GetBucketLocation","s3:ListBucket","s3:ListBucketMultipartUploads"],"Resource":["arn:aws:s3:::%s"]},{"Effect":"Allow","Action":["s3:GetObject","s3:PutObject","s3:DeleteObject","s3:AbortMultipartUpload","s3:ListMultipartUploadParts"],"Resource":["arn:aws:s3:::%s/*"]}]}\n' "$$S3_BUCKET" "$$S3_BUCKET" > /tmp/policy.json
+        mc admin policy create studio studio-app /tmp/policy.json || true
         mc admin policy attach studio studio-app --user "$$S3_ACCESS_KEY"
     networks: [backend]
 
@@ -77,10 +77,23 @@ services:
     command: sh mqnamesrv
     networks: [backend]
 
+  # 命名卷由 root 创建，而 broker 以 uid 3000 运行，不先改属主会因不可写而反复重启
+  rocketmq-perms:
+    image: apache/rocketmq:5.3.4
+    user: "0:0"
+    entrypoint: ["/bin/sh","-ec"]
+    command: ["chown -R 3000:3000 /home/rocketmq/store /home/rocketmq/logs"]
+    volumes:
+      - rocketmq-data:/home/rocketmq/store
+      - rocketmq-logs:/home/rocketmq/logs
+    networks: [backend]
+
   rmqbroker:
     image: apache/rocketmq:5.3.4
     restart: unless-stopped
-    depends_on: [rmqnamesrv]
+    depends_on:
+      rmqnamesrv: {condition: service_started}
+      rocketmq-perms: {condition: service_completed_successfully}
     environment:
       JAVA_OPT_EXT: "-Xms512m -Xmx512m -Xmn256m"
     command: sh mqbroker -n rmqnamesrv:9876 -c /home/rocketmq/broker.conf
@@ -98,7 +111,15 @@ services:
     entrypoint: ["/bin/sh","-ec"]
     command:
       - |
-        until sh mqadmin updateTopic -n rmqnamesrv:9876 -b rmqbroker:10911 -t video-analysis -r 8 -w 8; do sleep 3; done
+        # mqadmin 出错时退出码依然是 0，所以不能用它判断成功；
+        # 以 topicList 里能查到该 topic 作为唯一成功信号，并且限制重试次数。
+        i=0
+        until sh mqadmin topicList -n rmqnamesrv:9876 | grep -qx video-analysis; do
+          i=$$((i+1))
+          if [ "$$i" -gt 60 ]; then echo "无法创建 topic video-analysis" >&2; exit 1; fi
+          sh mqadmin updateTopic -n rmqnamesrv:9876 -c VideoStudioCluster -t video-analysis -r 8 -w 8 || true
+          sleep 3
+        done
     networks: [backend]
 
   app:

@@ -24,6 +24,14 @@ SESSION_COOKIE_SECURE=true 适用于 HTTPS；本机 HTTP 验证时才设为 fals
 
 应用以非 root 用户运行，根文件系统只读，/work 与 /tmp 为临时工作目录。默认 /work 限额 8 GiB，必须依据上传上限、分析并发、音轨和关键帧大小评估容量。临时空间不足会明确失败，不能自动切换成低质量分析。
 
+Compose 里的两个初始化步骤有隐式依赖，改动时不要删掉：
+
+- rocketmq-perms：命名卷由 root 创建，而 Broker 以 uid 3000 运行，必须先 chown，否则 Broker 会因不可写反复重启（日志里只有 logback 初始化，退出码 253）。
+- rocketmq-init：mqadmin 失败时退出码仍是 0，不能用它判断成功；脚本以 topicList 里能查到 topic 作为唯一成功信号，并限制重试次数。
+- minio-init：pgsty/mc 镜像没有 sed，桶策略用 printf 生成；创建策略与用户都做了幂等处理，重复启动不会中断。
+
+对象桶策略允许该用户列举桶、读写与删除对象、放弃分段上传。改用托管 S3 时，按同样范围授权。
+
 ## 外部中间件连接
 
 直接运行 jar 时，需要提供：
