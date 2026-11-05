@@ -53,6 +53,11 @@ Word 报告，并支持围绕报告继续追问。
 | 大文件分片上传 | 超过 32 MB 自动切 8 MB 分片逐片 PUT，服务端只记「哪些片已收到」，断网或刷新后可续传；单片失败自动重试 3 次 |
 | 可点回的界面 | 原片播放器 + `[mm:ss]` 点击跳转、报告目录、转写搜索高亮、关键帧灯箱、明暗主题、移动端抽屉 |
 | 档案式界面 | 「墨室档案」设计语言：宋体大标题、赭石强调色、等宽时间码、纸纹噪点、校验印章；暗色为墨室，亮色为宣纸 |
+| 断点续跑 | 每次阶段切换落一条断点；失败重试沿用同一任务，已完成的转写与抽帧直接复用，不必从头再跑 |
+| 成本护栏 | 单任务 / 每日 token 双限额，超限立刻停止生成或拒绝新任务，避免提示词写错时刷掉额度 |
+| 限流 | 提交按素材、上传按 IP、追问按任务做固定窗口限流，超限返回 429；无 Redis 时退化为进程内计数 |
+| 可观测 | `/actuator/prometheus` 暴露任务/阶段耗时直方图、token 消耗、降级与限流计数；日志每行带 `traceId` 与 `jobId` |
+| 优雅降级 | MinIO / Milvus / Redis 任一不可用都自动退化（本地盘 / 内存余弦 / 单机锁与进程内唤醒），只打警告不影响主流程 |
 
 ---
 
@@ -176,9 +181,47 @@ export LLM_MODEL=qwen-plus
 | `VECTOR_ENABLED` | `false` | 是否把分块向量写入向量库 |
 | `MILVUS_HOST` / `MILVUS_PORT` | `127.0.0.1` / `19530` | 向量库地址 |
 | `MILVUS_COLLECTION` | `video_studio_chunks` | 集合名，维度按实际向量自动建 |
+| `REDIS_LOCK_TTL_SECONDS` | `30` | 提交幂等锁的过期时间（防止进程崩溃后锁死） |
+| `REDIS_LOCK_WAIT_MILLIS` | `800` | 抢锁的等待时长 |
 
 > 三个开关都关掉时，应用只用 H2 + 本地磁盘 + 内存余弦检索，是一条外部依赖为零的路径。
 > 打开后如果中间件连不上，各自会降级并打警告，不会让服务起不来。
+
+### 限流与成本预算
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `RATE_SUBMIT_PER_MINUTE` | `12` | 同一素材每分钟最多提交几次分析（按素材限流，不是按 IP） |
+| `RATE_UPLOAD_PER_MINUTE` | `30` | 同一客户端 IP 每分钟最多上传几次 |
+| `RATE_CHAT_PER_MINUTE` | `40` | 同一任务每分钟最多追问几次 |
+| `RATE_REALTIME_PER_MINUTE` | `30` | 实时对话每分钟最多建连几次 |
+| `BUDGET_MAX_TOKENS_PER_JOB` | `2000000` | 单个任务最多消耗多少 token，超了立刻停止生成 |
+| `BUDGET_MAX_TOKENS_PER_DAY` | `20000000` | 每日总量上限，超了新任务直接拒绝提交 |
+| `BUDGET_PRICE_PER_MILLION` | `2.0` | 仅用于日志里估算花销，不影响逻辑 |
+
+> 限流阈值刻意设得比较宽松：目标是挡住脚本刷接口与误操作，不是给正常用户添堵。
+> 预算按 **token** 而不是 **请求次数** 计，因为一次请求可能是 200 token 的摘要，
+> 也可能是 8000 token 的长上下文——按次数限制挡不住真正的花费。
+
+### 可观测性
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE` | `health,info,prometheus,metrics` | 暴露的 actuator 端点 |
+
+启动后：
+
+```bash
+curl -s localhost:9090/actuator/prometheus | grep '^videostudio_'
+```
+
+可以看到按阶段的任务耗时（`videostudio_stage_duration_seconds{stage="transcribe"}`）、
+任务成功/失败计数、模型 token 消耗、限流命中数等。日志每行都带 `traceId`，
+一次失败可以直接 `grep` 出完整链路：
+
+```bash
+grep 'b9e91b90' server.log
+```
 
 ### 本地媒体工具
 

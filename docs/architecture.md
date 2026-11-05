@@ -462,21 +462,109 @@ for (int i = 1; i < span - 1; i++) {
 | `context_chunk` | 上下文分块 | `summary`、`keywords`、`visual_keywords`、`embedding` |
 | `analysis_report` | 报告 | `markdown`、`docx_path`、`trace_json` |
 | `chat_message` | 追问历史 | `role`、`content`、`citations_json` |
+| `job_checkpoint` | 任务断点 | `stage`、`payload_json`、`attempts` |
+| `upload_session` / `upload_chunk` | 分片上传 | `upload_id`、`chunk_index`、`size_bytes` |
 
 所有 `CREATE TABLE` 都是 `IF NOT EXISTS`，H2 与 MySQL 语法兼容（`CLOB` 在 MySQL 侧可映射为 `LONGTEXT`）。
 
 ## 5. 并发与恢复
 
-- `JobService` 用固定 2 线程的守护线程池，`ConcurrentHashMap<Long, Future<?>>` 记录运行中任务
-- 任务内部还有两级并发：`asr-concurrency`（转写）与 `ocr-concurrency`（画面文字），默认都是 3
+### 5.1 线程模型
+
+- `JobService` 用 **有界队列** 的 `ThreadPoolExecutor(2, 2, ArrayBlockingQueue(32), AbortPolicy)`，
+  `ConcurrentHashMap<Long, Future<?>>` 记录运行中任务。
+  不用 `newFixedThreadPool` 是有意的：无界队列在提交速度超过处理速度时会一直堆积到 OOM，
+  而且没有任何提示；有界队列 + 显式拒绝能在提交时立刻返回 429。
+- 队列满时把任务标为失败并抛 `ApiException.conflict("分析队列已满…")`，
+  而不是让用户对着「排队中」干等。
+- 任务内部还有两级并发：`asr-concurrency`（转写）与 `ocr-concurrency`（画面文字），默认都是 3。
 - 画面证据是「串行指纹快筛 → 并行 OCR → 串行文本判重」三段式：
-  去重依赖前一帧的状态，所以只有 OCR 这一步能并行
+  去重依赖前一帧的状态，所以只有 OCR 这一步能并行。
+
+### 5.2 断点续跑
+
+长视频一次分析可能十几分钟，转写与抽帧占了绝大部分 CPU。模型超时或进程重启就全部重来，
+体验和成本都很糟，所以流水线在每次阶段切换时落一条断点（`job_checkpoint`）。
+
+- **写**：`Run.stage()` 进入新阶段时，先把**上一个**阶段记成「已完成」。
+  写失败只记 `debug` 日志——断点是加速手段，不能因为存储抖动把正常分析搞挂。
+- **读**：`execute()` 的**第一行**读断点，必须早于任何 `stage()` 调用。
+  这条顺序踩过坑：`stage()` 自己会写断点，放到后面读会让刚提交的新任务误判成续跑。
+- **用**：续跑时 `EvidenceService.findReusable(..., allowSelf = true)` 允许复用**本任务自己**的证据。
+  重试沿用同一个 `jobId`，上次失败前已落库的转写与画面就在自己名下，
+  若仍按「排除自己」的规则查询，等于每次重试都从零开始，断点白记。
+- **终态**：`DONE` 不走 `stage()`，所以在成功分支显式补写一次断点。
+
+实测：把任务 21 的断点手工改成 `TRANSCRIBE` 并置为 FAILED，调 `POST /api/jobs/21/retry` 后
+事件流出现「断点续跑（第 2 次）：上次完成到「语音识别」」与「复用任务 21 的转写（3 段），跳过语音识别」，
+12 秒完成（首次走完整流程约 31 秒）。
+
+### 5.3 其它恢复手段
+
 - 分片上传的清理交给 `UploadJanitor`（默认每小时第 17 分），清理未完成会话与残留目录
 - 启动时 `jobRepository.failZombies` 把上次进程崩溃遗留的 `PENDING` / `RUNNING` 标为失败
 - 取消：`cancel` 先置 `CANCELED` 再 `future.cancel(true)`，流水线在下个阶段检查状态
 - SSE 与流水线解耦：前端刷新、断线重连都不影响任务本身
 
-## 6. 前端结构
+## 6. 工程能力：限流 / 预算 / 可观测性
+
+这三块都不影响「能不能分析出来」，但决定了「敢不敢让真实用户用」。
+
+### 限流（`infra/RateLimiter`）
+
+固定窗口计数：一次 `INCR + EXPIRE`，天然原子，跨实例共享（有 Redis 时）。
+
+- 为什么不用滑动窗口：实现复杂度高一个量级，而固定窗口的代价只是边界处最多放过两倍流量，
+  对「挡住脚本刷接口」这个目标完全够用。需要严格平滑时再换令牌桶。
+- 没有 Redis 时退化为进程内计数：单实例部署这就是正确行为；多实例时每个副本各自限流，
+  总体放行量翻倍——这是有意的降级，不是 bug。
+- 维度：提交按**素材**（同一素材被反复提交一定是异常）、上传按**IP**、
+  追问按**任务**（追问是模型调用的真实成本来源）。超限统一返回 429。
+
+实测：`rate.submit-per-minute=12` 时，第 11 次提交开始返回
+`{"ok":false,"message":"该素材提交分析过于频繁，请 60 秒后再试"}`，
+`videostudio_rate_limited_total{scope="submit"}` 累加到 5。
+
+### 成本预算（`infra/BudgetGuard`）
+
+单位是 **token 而不是请求次数**：一次请求可能是 200 token 的分块摘要，
+也可能是 8000 token 的长上下文执行，按次数限制根本挡不住真正的花费。
+
+- 两层：单任务超限立刻终止（`exhausted` 集合 + `exceeded(jobId)`，Agent 循环每轮开头检查）；
+  每日总量超限时**新任务直接拒绝提交**，而不是跑到一半才失败——
+  后者会浪费已经花掉的转写与抽帧成本。
+- `ThreadLocal<Long> current` 把 jobId 绑到流水线线程上，`LlmGateway` 记账时不必层层传参。
+  代价是 OCR 池线程里的画面描述不计入；它受帧数配额限制，量级可忽略。
+- 有 Redis 时日额度存 `video-studio:budget:{date}` 供多实例共享，没有则用进程内计数。
+
+### 可观测性
+
+- `TraceIdFilter`（最高优先级）给每个请求分配 `traceId`，写 MDC 与响应头 `X-Request-Id`，
+  `finally` 里清理（Tomcat 线程复用，不清理会泄漏给下一个请求）。
+  日志格式：`%d{HH:mm:ss.SSS} %-5level [%X{traceId}] [%X{jobId}] %logger{36} - %msg`。
+- `JobMetrics` 暴露：
+  `videostudio_jobs_started_total{mode}`、`videostudio_jobs_finished_total{mode,status}`、
+  `videostudio_jobs_active`、`videostudio_job_duration_seconds`（直方图，能看长尾而不只是均值）、
+  `videostudio_stage_duration_seconds{stage}`、`videostudio_llm_tokens_total`、
+  `videostudio_rate_limited_total{scope}`、`videostudio_fallback_total{component,reason}`。
+- `/actuator/prometheus` 实测可见 `stage="transcribe"`、`stage="ocr"`、`stage="plan"` 等按阶段的耗时，
+  以及 `jobs_finished_total{mode="GENERAL",status="succeeded"} 2.0`。
+- `management.endpoints.web.exposure.include` 只开 health/info/prometheus/metrics：
+  默认的 `env`、`beans` 会把配置与内部结构暴露给任何能访问的人。
+
+### SSE 的事件驱动改造
+
+原来每个 SSE 连接每 700ms 查一次数据库；现在改成「事件写入时唤醒 + 3 秒兜底轮询」：
+
+- `JobEventBus.publish(jobId, seq)` 先唤醒**本实例**的等待者，再往 Redis 频道
+  `video-studio:job-events` 发一条极简消息 `{"jobId":..,"seq":..}`。
+- 其他实例的监听容器收到后同样唤醒本地等待者，从而实现跨实例推送。
+- 只广播「有新事件了」这个信号，不广播事件内容：事件本身以 `job_event` 表为准，
+  丢一条消息最多退化成一次轮询，不会丢数据。这是「用不可靠通道做加速、用数据库保证正确」的取舍。
+- `subscribe()` 返回注销句柄，SSE 的 `onCompletion/onTimeout/onError` 都要关掉，
+  否则 `waiters` map 会随连接数一直增长。
+
+## 7. 前端结构
 
 单页 Vue 3 应用，没有引入 UI 框架，样式是一套手写设计系统（`client/src/styles.css`，
 `--token` 双层：`:root` 暗色 + `:root[data-theme='light']` 亮色，布局用 grid-areas
@@ -532,7 +620,7 @@ for (int i = 1; i < span - 1; i++) {
 - `DELETE /api/jobs/{id}` 与级联的 `DELETE /api/media/{id}` 由 `CleanupService` 统一处理，
   按 `job-{id}` 目录粒度删除，避免误删同素材其他任务的帧与音频
 
-## 7. 部署形态与中间件
+## 8. 部署形态与中间件
 
 代码里对每个中间件都是「接口 + 两个实现 + 自动降级」，切换只靠环境变量：
 
@@ -555,11 +643,12 @@ for (int i = 1; i < span - 1; i++) {
 容器部署（四阶段构建、whisper 模型挂卷、MinIO 官方镜像已下架的处理）见
 [部署与中间件](deployment.md)。
 
-## 8. 未做但值得做的
+## 9. 未做但值得做的
 
 - 真正的增量 embedding（已接 Milvus，但仍是「每个任务重建自己那份向量」，
   没有做到「同一素材新增分块只补增量」；量级测算见 [对比文档 §5](comparison.md#5-内存与向量库的实测数据)）
 - 多任务共享同一份「证据提取」结果，避免重复抽帧/转写（已部分完成：见 3.6）
 - 声纹级说话人分离（当前只用到音高，音色相近的人会合并；见 3.11 的已知边界）
 - 视觉模型描述关键帧（已完成：见 3.9，默认关闭、只描述空文字帧）
-- 与参考项目的其余差距（URL 导入、登录、断点续跑、成本预算）逐项列在 [对比文档 §6](comparison.md#6-若要补齐差距各需要什么)
+- 断点续跑与成本预算（已完成：见 5.2 与 6）
+- 与参考项目的其余差距（URL 导入、登录体系、Chrome 扩展）逐项列在 [对比文档 §6](comparison.md#6-若要补齐差距各需要什么)
