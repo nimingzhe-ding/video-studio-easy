@@ -50,6 +50,7 @@ const code = computed(() => `#${String(props.job.id).padStart(3, '0')}`);
         <span class="sep">·</span>
         <span v-if="running">{{ stageText }} {{ job.progress }}%</span>
         <span v-else>{{ STATUS_LABELS[job.status] || job.status }}</span>
+        <span v-if="job.degraded" class="badge warn degraded-tag" title="语义检索缺失，本次报告只用了关键词匹配">降级</span>
       </div>
       <div class="item-sub asset-line">
         <template v-if="assetName">{{ assetName }}</template>
@@ -82,5 +83,12 @@ const code = computed(() => `#${String(props.job.id).padStart(3, '0')}`);
   font-size: 11px;
   margin-top: 2px;
   letter-spacing: 0.02em;
+}
+
+.degraded-tag {
+  margin-left: 6px;
+  font-size: 9.5px;
+  padding: 1px 6px;
+  vertical-align: 1px;
 }
 </style>

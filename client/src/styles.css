@@ -810,6 +810,19 @@ button.small {
   transition: opacity 0.16s ease;
 }
 
+/* 失败投递是运维操作：重投按钮必须常显，藏在 hover 里等于要求运维去猜哪里能点 */
+.delivery-item .item-actions {
+  opacity: 1;
+}
+
+.delivery-item .item-sub {
+  white-space: normal;
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
 .item:hover .item-actions,
 .item:focus-within .item-actions {
   opacity: 1;

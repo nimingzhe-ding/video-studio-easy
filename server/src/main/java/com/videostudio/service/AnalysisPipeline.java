@@ -161,6 +161,12 @@ public class AnalysisPipeline {
          * 只能靠断点判断「已落库的转写要不要重做一次」。
          */
         boolean speakerSeparated = false;
+        /**
+         * 本次报告是否在证据不完整的情况下产出。
+         * <p>目前只有向量索引会置位：它失败不终止任务（关键词检索仍可用），
+         * 但用户看到报告时应当知道语义召回这一路是缺的。
+         */
+        boolean degraded = false;
 
         Run(AnalysisJob job, MediaAsset asset, Path source) {
             this.job = job;
@@ -240,7 +246,7 @@ public class AnalysisPipeline {
         try {
             jobRepository.markRunning(jobId);
             execute(run, job, asset, source);
-            if(!jobRepository.markSucceeded(jobId)) throw new java.util.concurrent.CancellationException("任务已取消");
+            if(!jobRepository.markSucceeded(jobId, run.degraded)) throw new java.util.concurrent.CancellationException("任务已取消");
             run.emit(JobStage.DONE, JobEvent.TYPE_DONE, "info", 100, "分析完成");
             // DONE 是终态，不走 stage()，所以断点要在这里显式落一次；
             // 否则断点会永远停在最后一个真实阶段，重试时白跑一遍报告
@@ -399,6 +405,7 @@ public class AnalysisPipeline {
                 run.emit(JobStage.CHUNK, JobEvent.TYPE_LOG, "info", JobStage.CHUNK.floor(),
                         "向量索引 %s：%d/%d 个分块".formatted(vectors.provider(), withVector, chunks.size()));
             } catch (RuntimeException ex) {
+                run.degraded = true;
                 run.emit(JobStage.CHUNK, JobEvent.TYPE_WARNING, "warn", JobStage.CHUNK.floor(),
                         "向量索引失败，本次检索退化为关键词匹配：%s".formatted(ex.getMessage()));
             }
@@ -468,6 +475,9 @@ public class AnalysisPipeline {
         }
         trace.put("warnings", run.warnings);
         trace.put("llmEnabled", aiProps.cloudEnabled());
+        if (run.degraded) {
+            trace.put("degraded", true);
+        }
 
         reportRepository.insert(new AnalysisReport(0, run.jobId, asset.id(), draft.title(), outcome.mode(),
                 markdown, Json.write(draft.sections()), Json.write(trace),

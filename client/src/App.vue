@@ -42,6 +42,13 @@ const player = ref(null);
 const upload = reactive({ percent: 0, name: '', size: 0, active: false, chunked: false, error: '' });
 let uploadController = null;
 const form = reactive({ mode: 'AUTO', goal: '', title: '' });
+/**
+ * 失败投递运维面板：只有管理员可见。
+ * <p>角色来自登录返回的 account.role；后端 /api/admin/** 也有一层 hasRole("ADMIN")，
+ * 这里只是不把用不上的入口展示给普通用户，不承担鉴权职责。
+ */
+const isAdmin = computed(() => props.account?.role === 'ADMIN');
+const deliveries = ref([]);
 
 const modes = [
   { value: 'AUTO', label: '自动判断' },
@@ -105,7 +112,42 @@ let reconnectTimer = null;
 onMounted(async () => {
   await refreshAll();
   pollTimer = setInterval(pollJobs, 5000);
+  // 失败投递不参与 5 秒轮询：它是运维视角，手动刷新即可，没必要让每个管理员页面一直挂着请求
+  loadDeliveries();
 });
+
+/**
+ * 刷新失败投递列表。
+ * <p>普通用户不请求这个接口：既省一次必然 403 的往返，也避免控制台里出现无意义的错误。
+ */
+async function loadDeliveries() {
+  if (!isAdmin.value) {
+    return;
+  }
+  try {
+    deliveries.value = (await api.failedDeliveries(true, 50)) || [];
+  } catch (e) {
+    notify(e.message, 'err');
+  }
+}
+
+/** 重投一条失败投递：后端会递增代次并重新排队，成功后从待处理列表里移除 */
+async function replayDelivery(item) {
+  if (busy.value) {
+    return;
+  }
+  busy.value = true;
+  try {
+    await api.replayDelivery(item.id);
+    deliveries.value = deliveries.value.filter((row) => row.id !== item.id);
+    notify(`任务 NO.${String(item.jobId).padStart(4, '0')} 已重新排队`, 'ok');
+    jobs.value = (await api.listJobs(100)) || [];
+  } catch (e) {
+    notify(e.message, 'err');
+  } finally {
+    busy.value = false;
+  }
+}
 
 onUnmounted(() => {
   if (pollTimer) {
@@ -709,6 +751,30 @@ async function retryCurrentJob() {
               </span>
             </div>
             <div class="hint">模型及存储服务异常时，任务会停止并保留错误信息，可在恢复后重试。</div>
+          </div>
+        </div>
+      </section>
+
+      <section v-if="isAdmin" class="panel">
+        <div class="panel-head">
+          <span class="index">05</span>
+          <h3>失败投递</h3>
+          <div class="spacer" />
+          <button class="ghost icon" title="刷新" @click="loadDeliveries">↻</button>
+        </div>
+        <div class="panel-body tight">
+          <div class="list">
+            <div v-if="!deliveries.length" class="empty">没有待处理的失败投递。</div>
+            <div v-for="item in deliveries" :key="item.id" class="item delivery-item">
+              <div class="item-main">
+                <div class="item-title">任务 NO.{{ String(item.jobId).padStart(4, '0') }} · 第 {{ item.generation }} 代</div>
+                <div class="item-sub" :title="item.reason">{{ item.reason }}</div>
+                <div class="item-sub asset-line">{{ formatRelative(item.createdAt) }}</div>
+              </div>
+              <div class="item-actions">
+                <button class="ghost" :disabled="busy" @click="replayDelivery(item)">重投</button>
+              </div>
+            </div>
           </div>
         </div>
       </section>

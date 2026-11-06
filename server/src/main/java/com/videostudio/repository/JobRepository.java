@@ -96,10 +96,20 @@ public class JobRepository {
     }
 
     public boolean markSucceeded(long id) {
+        return markSucceeded(id, false);
+    }
+
+    /**
+     * @param degraded 本次报告是否在证据不完整的情况下产出（目前只有向量索引用得上：
+     *                 索引失败不会终止任务，但语义召回这一路确实缺失，前端应当能看见）
+     */
+    public boolean markSucceeded(long id, boolean degraded) {
         return jdbc.update("""
-                UPDATE analysis_job SET status = ?, stage = ?, progress = 100, updated_at = ?, finished_at = ?
+                UPDATE analysis_job SET status = ?, stage = ?, progress = 100, updated_at = ?, finished_at = ?,
+                                       degraded = ?
                 WHERE id = ? AND status = 'RUNNING'
-                """, JobStatus.SUCCEEDED.name(), JobStage.DONE.name(), Sql.now(), Sql.now(), id) == 1;
+                """, JobStatus.SUCCEEDED.name(), JobStage.DONE.name(), Sql.now(), Sql.now(),
+                degraded, id) == 1;
     }
 
     public void markFailed(long id, String error) {
