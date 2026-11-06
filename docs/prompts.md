@@ -80,7 +80,20 @@
 随后 `ChunkEnricher` 用模型改写摘要并生成 embedding。模型不可用时任务失败，
 这份摘要不会作为最终产物——它只是失败时日志里能看到的内容。
 
-## 8. 追问
+## 8. 分析模式
+
+模式不再是 Java 枚举，而是配置驱动：
+
+- `server/src/main/resources/modes.json` 定义内置模式（GENERAL / LEARNING / REVIEW / CREATION），每项包含 `code`、`label`、`guidance`、`sectionKeys`、`defaultGoal`。
+- 外置文件用 `agent.modes-file` 指向，同名 `code` 覆盖内置定义；追加新模式只需加一份 JSON，不改 Java、不重新打包。
+- 启动时校验：code 唯一且为大写下划线、至少保留 GENERAL、guidance 非空。校验失败拒绝启动——写错的模式配置会让所有任务用错提纲，运行期很难发现。
+- 外置文件只能追加或覆盖，删不掉内置模式。这是有意的：能删掉 GENERAL 的话，一次错误部署会让所有「未填目标」的提交失去默认模式。
+
+三处消费点都从注册表取值：`ModeRouter` 的动态可选清单（不再写死在提示词里）、`AnalysisAgent` 的必需小节、`JobService` 的默认目标。前端下拉框读 `/api/jobs/runtime` 的 `modes` 字段。
+
+历史数据里的模式被下线后，`AnalysisMode.ofCode` 保留原始 code 作为 label，而不是改写成 GENERAL——那份报告当初用的确实不是通用模式。
+
+## 9. 追问
 
 `follow-up.md` 的三条硬约束：
 
@@ -91,41 +104,41 @@
 回答限制 400 字、使用项目符号，是为了在侧栏里可读；
 时间戳会被 `Times.extractCitations` 抽取并存进 `chat_message.citations_json`，方便后续做证据回跳。
 
-## 9. 模式路由
+## 10. 模式路由
 
-`mode-router.md` 明确要求「判断依据是用户目标的真实意图，而非字面关键词」，
-并列出了每个模式的定位；无法归类时回落到 `GENERAL`。
+`mode-router.md` 要求「判断依据是用户目标的真实意图，而非字面关键词」。
+可选模式清单**不写在提示词里**，由 `ModeRouter` 在每次调用时从注册表拼进消息——
+写死在提示词里的清单一旦和代码不同步，模型就会返回一个不存在的模式名。
 
 调用点在 `service/ModeRouter.java`：前端选「自动判断」时 `mode` 传空，后端在任务落库前调一次模型
-（`temperature = 0.0`，`max_tokens = 200`），只认带引号的 `"LEARNING"` 这种严格命中——
-宽松匹配会让模型在解释里顺带提到别的模式名而被误判。
+（`temperature = 0.0`，`max_tokens = 200`）。返回的 code 必须能在注册表里查到，
+否则按失败处理；模型把 JSON 包进 ``` 围栏时会先剥掉再解析。
 
-失败路径只有一条：**判定失败就不创建任务**。生产版本删掉了原来的「关键词规则兜底」，
-因为规则判错模式会产出一份「看起来正常、其实用错提纲」的报告，比直接报错更难发现。
+失败路径只有一条：**判定失败就不创建任务**。没有「关键词规则兜底」——
+规则判错模式会产出一份「看起来正常、其实用错提纲」的报告，比直接报错更难发现。
 
 | 情况 | 结果 |
 | --- | --- |
 | 模型超时 / 报错 | 提交接口直接返回错误，任务不落库；用户可手动选模式后重新提交 |
-| 返回非法结构或未知模式 | 抛「自动模式判断返回无效结构，请重试或手动选择模式」 |
-| 目标留空 | 不调模型，直接用 `GENERAL`（这是产品行为，不是降级） |
+| 返回未注册的模式名 | 抛「自动模式判断返回了未注册的模式 X，请重试或手动选择模式」 |
+| 目标留空 | 不调模型，直接用注册表里的默认模式（产品行为，不是降级） |
+| 请求里传了未知 mode | 控制器返回 400，不会静默回退成通用模式 |
 
 判定结果与理由一起写进任务的 `mode_source` / `mode_reason`（`AUTO` 表示模型判定，
 `USER` 表示用户在界面上指定），界面显示成「学习笔记 · 模型判定」。
-另外注意 `AnalysisMode.of()` 会把非法值静默吞成 `GENERAL`，所以控制器层没有用它来做校验——
-拼错的模式名会明确返回 400。
 
-## 10. 调参建议
+## 11. 调参建议
 
 | 想改善 | 改哪里 |
 | --- | --- |
 | 结论太空泛 | `executor.md` 加「每条结论必须包含具体的数字、名称或动作」 |
-| 小节不够细 | `AnalysisMode.outlineHints()`（Java）或 `planner.md` 的任务描述 |
+| 小节不够细 | `modes.json` 里该模式的 `sectionKeys`，或 `planner.md` 的任务描述 |
 | 校验太严导致反复重写 | `EvidenceValidator` 的 `±2000ms` OCR 容差，或 `agent.max-rounds` |
 | 摘要太长/太短 | `chunk-summary.md` 的 200 字限制 + `ChunkEnricher` 的 `max_tokens=260` |
 | 追问太啰嗦 | `follow-up.md` 的 400 字限制 + `FollowUpService` 的 `max_tokens=900` |
 | 上下文不够用 | `agent.max-context-chars`（默认 24000）；注意超预算的条目会被跳过而不是截断 |
 | 多轮补充不到证据 | `ContextRenderer.recall` 的容差下限（当前 60 秒）与 `critiqueQuery` 的拼接口径 |
-| 模式判不准 | `ModeRouter.KEYWORDS` 的关键词表，或 `mode-router.md` 的模式定位描述 |
+| 模式判不准 | `modes.json` 里各模式的 `guidance` 措辞 |
 | 两个人被并成一个讲者 | `SPEAKER_SPLIT_SEMITONES` 调到 `3.0`；注意低于 3 会把同一个人拆开 |
 | 同一个人被拆成两个讲者 | 调到 `5.0`；真正的解法是换声纹特征（见 architecture 3.11 已知边界） |
 | 单人视频不该有标签 | 只有一个讲者时本来就不打标签；确实需要连单人也不分析就关 `SPEAKER_SEPARATION_ENABLED` |

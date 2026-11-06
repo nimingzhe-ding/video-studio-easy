@@ -36,7 +36,7 @@
 
 ## 任务
 
-- POST /api/jobs：{ assetId, goal, mode, title }。任务和待投递记录同事务提交。
+- POST /api/jobs：{ assetId, goal, mode, title }。任务和待投递记录同事务提交。mode 取注册表里的模式标识，留空表示自动判断；未知值直接返回 400，不会静默回退成通用模式。
 - GET /api/jobs?limit=50、GET /api/jobs/{id}。
 - POST /api/jobs/{id}/cancel、POST /api/jobs/{id}/retry。
 - POST /api/jobs/{id}/reanalyze：{ goal, mode }，创建新任务。
@@ -56,4 +56,4 @@
 
 ## 运维
 
-/api/jobs/runtime 返回当前已配置的模型和存储类型，不包含密钥。/actuator/health/readiness 返回依赖就绪情况。/actuator/prometheus 需要管理员身份。
+/api/jobs/runtime 返回当前已配置的模型和存储类型，不包含密钥；其中的 `modes` 是当前注册表里的分析模式清单（code 与 label），前端据此渲染模式下拉框。`/actuator/health/readiness` 返回依赖就绪情况。`/actuator/prometheus` 需要管理员身份。
