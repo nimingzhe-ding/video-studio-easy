@@ -51,6 +51,8 @@ Compose 里的两个初始化步骤有隐式依赖，改动时不要删掉：
 | ASR_URL、ASR_MODEL | 云端语音识别 |
 | EMBEDDING_BASE_URL、EMBEDDING_API_KEY、EMBEDDING_MODEL | 向量模型；独立 Key 留空时沿用 AI_API_KEY |
 
+成本上限有三个维度：`BUDGET_MAX_TOKENS_PER_JOB`（单任务）、`BUDGET_MAX_TOKENS_PER_DAY`（全站每日）、`BUDGET_MAX_TOKENS_PER_USER_PER_DAY`（单用户每日，默认 500 万）。用户维度按任务归属统计；把它设为 0 会关闭该维度，回到「全站共用一个桶」的行为。
+
 更换向量模型或维度时，使用新集合并重建索引，不得原地删除旧集合。应用启动时会检查集合维度。
 
 ## 从旧演示版升级
@@ -72,7 +74,9 @@ Compose 里的两个初始化步骤有隐式依赖，改动时不要删掉：
 
 job_outbox 的 PENDING 记录表示尚未获 Broker 确认。投递器按退避间隔持续重试；监控积压数量、最老记录年龄和 attempts。
 
-消费失败由 RocketMQ 重投。三次重试后，failed_delivery 记录任务与消息 ID，Broker 原消息保留在 %DLQ%video-studio-workers。先修复模型、存储或配置，再通过任务重试接口重新投递；重试会递增 generation，因此旧消息不能启动新一代任务。
+消费失败由 RocketMQ 重投。三次重试后，failed_delivery 记录任务与消息 ID，Broker 原消息保留在 %DLQ%video-studio-workers。管理员通过 `GET /api/admin/failed-deliveries` 查看待处理记录，用 `POST /api/admin/failed-deliveries/{id}/replay` 重新投递：它递增 generation，与用户重试走同一条状态机，旧代次的消息无法启动新一代任务。同一条记录只能重投一次。
+
+重投不检查当日模型额度——死信恰恰要在额度耗尽、需要恢复的时候清理。先修复模型、存储或配置，再重投。
 
 不要直接删除死信或将全部失败消息无差别重放。重复外部模型请求仍可能产生费用。
 

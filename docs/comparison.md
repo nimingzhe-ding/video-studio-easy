@@ -14,7 +14,7 @@
 | --- | --- | --- | --- |
 | 提交到消息队列 | `AnalysisDispatchService` 直接投 RocketMQ，靠“内容指纹 + 目标”加锁防重复 | 任务与 `job_outbox` 同事务写入，Broker 确认后才标记已发送 | 本项目更可靠 |
 | 消费幂等 | Redisson 锁 + 幂等结果查询 | Redisson 锁 + 状态与 generation 双校验，旧代次消息直接确认 | 相当 |
-| 投递失败重试 | RocketMQ 有限重投；失败入表，管理端可 replay | RocketMQ 有限重投；落 `failed_delivery`，**无查询与重投接口** | 参考领先 |
+| 投递失败重试 | RocketMQ 有限重投；失败入表，管理端可 replay | RocketMQ 有限重投；落 `failed_delivery`，管理端可查询与重投 | 相当 |
 | 执行者失联 | 未见自动回收 | `StaleJobReaper`：抢锁成功 + 15 分钟无进度才重新排队，自动重跑有上限 | 本项目 |
 | 分片上传 | 5 MB 分片，Redis 记录进度，MinIO 合并 | 8 MB 分片，MySQL 记进度 + 分片本身入 S3，跨实例可续传 | 相当 |
 | 任务断点 | MySQL 为真源 + Redis 热缓存，持久化 VideoContext、分块、计划与 Critic 状态 | 按阶段落 `job_checkpoint`，复用已产出的转写与画面证据 | 参考恢复粒度更细 |
@@ -26,9 +26,9 @@
 | 认证 | 自写 `AuthInterceptor` + Redis 会话；开放注册 | Spring Security 会话 + BCrypt + CSRF；注册默认关闭，首次部署由环境变量建管理员 | 本项目基线更标准 |
 | 数据归属 | 按 `userId` 过滤 | `owner_id` + `OwnerGuard` 拦截器按 `/api/media`、`/api/jobs` 前缀统一校验 | 相当 |
 | 每用户限流 | Redisson `RRateLimiter`：`limit:ai:user:<id>` + `limit:ai:global` | 提交与上传按用户、追问按任务限流（每分钟），登录注册按 IP | 相当 |
-| 成本预算 | 无 token 预算 | 任务级 + 全局日 token 预算 | 各有侧重 |
-| 用户级成本隔离 | 用户的 AI 调用速率受限 | **日预算键没有用户维度**，单个用户可吃光全站额度 | 本项目缺 |
-| 管理端 | 失败任务列表 + `POST /{id}/replay` | 仅用户列表与创建 | 参考领先 |
+| 成本预算 | 无 token 预算 | 单任务 + 全站每日 + 单用户每日三层 token 预算 | 本项目 |
+| 用户级成本隔离 | 用户的 AI 调用速率受限 | 用户每日额度用尽只挡住该用户，不影响其他人 | 相当 |
+| 管理端 | 失败任务列表 + `POST /{id}/replay` | 账户列表与创建 + 失败投递列表与重投 | 相当 |
 | 对外开放 | 无 API token | 无 API token | 都没做 |
 
 ## 三、上下文与证据
@@ -55,10 +55,10 @@
 
 ## 五、参考项目有、我们没有
 
-1. **失败任务管理接口**：`FailedAnalysisTaskService` + 管理端 replay，运维不必进数据库。
-2. **模式注册表**：`ModeRegistry` / `ModeProfile`，新增分析模式不需要改 Java 枚举。
-3. **Agent 离线评测**：可回归地衡量提示词与检索改动是否变好。
-4. **链接导入与演示模式**：降低首次上手门槛。
+1. **模式注册表**：`ModeRegistry` / `ModeProfile`，新增分析模式不需要改 Java 枚举。
+2. **Agent 离线评测**：可回归地衡量提示词与检索改动是否变好。
+3. **链接导入与演示模式**：降低首次上手门槛。
+4. **对外开放接口**：API token 与 webhook，两边都没做，不构成差异。
 
 ## 六、我们有、参考项目没有
 
@@ -67,18 +67,20 @@
 3. **严格失败策略**：没有离线模板、关键词兜底或本地 whisper 回退。
 4. **文档级交付物**：Word 插图报告、字幕三格式、说话人分离。
 5. **标准运维面**：Prometheus 指标、就绪探针、CI 校验链路。
+6. **用户级成本隔离**：单用户每日额度，防止一个人吃光全站额度。
+7. **失败投递运维台**：管理端可列出并重投死信任务，不必进数据库。
 
 ## 七、验证状态
 
-本机用真实中间件（MySQL 8.4 / Redis / RocketMQ / MinIO / Qdrant）跑通过：Flyway 两个迁移、readiness 四依赖全绿、CSRF 登录、上传落 `assets/1/source.mp4`、发件箱 `PENDING → SENT`、消费幂等与断点续跑（4 次尝试均从「音频抽取」继续）、失败落 `failed_delivery`、`video_chunks` 集合自动创建。
+本机用真实中间件（MySQL 8.4 / Redis / RocketMQ / MinIO / Qdrant）跑通过：Flyway 迁移、readiness 四依赖全绿、CSRF 登录、上传落 `assets/1/source.mp4`、发件箱 `PENDING → SENT`、消费幂等与断点续跑（4 次尝试均从「音频抽取」继续）、失败落 `failed_delivery`、`video_chunks` 集合自动创建。
 
-尚未验证：**模型成功出报告**的完整链路（本机无真实 API key，任务按要求停在 ASR 鉴权失败）、多副本压测与 SLO 数据。
+尚未验证：**模型成功出报告**的完整链路（本机无真实 API key，任务按要求停在 ASR 鉴权失败）、多副本压测与 SLO 数据、失败投递重投在真实 Broker 上的端到端表现。
 
 ## 八、结论
 
-- **已具备**：可部署的产品形态——可靠投递、多用户隔离、对象存储与向量库、可观测与失败可解释。
-- **尚不具备平台能力**：用户级配额、对外开放接口、可扩展的模式注册、失败任务运维台。
+- **已具备**：可部署的产品形态——可靠投递、多用户隔离与成本隔离、对象存储与向量库、可观测与失败可解释、死信可运维。
+- **尚不具备平台能力**：对外开放接口、可扩展的模式注册、Agent 离线评测。
 
-按投入产出排序，补齐顺序建议为：用户级配额与用量可见 → 失败任务查询与重投 → API token 与 webhook → 模式注册化。
+按投入产出排序，补齐顺序建议为：模式注册化 → API token 与 webhook → Agent 离线评测。
 
 参考项目来源：[仓库](https://github.com/nimingzhe-ding/DOVideo-AI/tree/df4fa83)。

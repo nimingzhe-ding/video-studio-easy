@@ -15,6 +15,15 @@
 - GET /api/admin/users：列出账户，仅 ADMIN 可用。
 - POST /api/admin/users：{ username, password }，创建普通账户；注册关闭时仍可由管理员开通。不会返回密码哈希。
 
+## 管理员：失败投递
+
+重试耗尽的任务会写入 failed_delivery，原始消息由 Broker 留在死信队列。
+
+- GET /api/admin/failed-deliveries?pendingOnly=true&limit=50：列出失败投递。默认只返回尚未重投过的记录。
+- POST /api/admin/failed-deliveries/{id}/replay：重新投递该任务。递增 generation 并写发件箱，与用户重试走同一条状态机；同一条记录只能重投一次，重复调用返回 409。
+
+重投不检查当日模型额度：死信清理不应该被额度挡住。原消息不重放——它带着旧代次，重放会被消费端忽略。
+
 ## 素材与上传
 
 - GET /api/media?limit=50：仅当前用户的素材。
