@@ -41,10 +41,6 @@ public class AppProperties {
     public static class Redis {
         /** 锁的持有时间上限：超过即认为持有者已经挂了，避免死锁 */
         private long lockTtlSeconds = 30;
-        /** 拿不到锁时最多等多久，等不到就返回 409，而不是无限阻塞 Tomcat 线程 */
-        private long lockWaitMillis = 800;
-        /** 事件广播保留多久，用于后端实例短暂抖动期间补读 */
-        private long eventTtlMinutes = 30;
 
         public long getLockTtlSeconds() {
             return lockTtlSeconds;
@@ -52,22 +48,6 @@ public class AppProperties {
 
         public void setLockTtlSeconds(long lockTtlSeconds) {
             this.lockTtlSeconds = lockTtlSeconds;
-        }
-
-        public long getLockWaitMillis() {
-            return lockWaitMillis;
-        }
-
-        public void setLockWaitMillis(long lockWaitMillis) {
-            this.lockWaitMillis = lockWaitMillis;
-        }
-
-        public long getEventTtlMinutes() {
-            return eventTtlMinutes;
-        }
-
-        public void setEventTtlMinutes(long eventTtlMinutes) {
-            this.eventTtlMinutes = eventTtlMinutes;
         }
     }
 

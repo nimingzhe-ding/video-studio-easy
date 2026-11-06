@@ -302,10 +302,4 @@ public class AnalysisAgent {
     private static String sectionKeys(AnalysisMode mode) {
         return String.join("、", sectionKeysList(mode));
     }
-
-    private static String sectionKey(AnalysisMode mode, String hint) {
-        List<String> keys = sectionKeysList(mode);
-        int index = mode.outlineHints().indexOf(hint);
-        return index >= 0 && index < keys.size() ? keys.get(index) : "section" + index;
-    }
 }
