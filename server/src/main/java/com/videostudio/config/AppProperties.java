@@ -130,16 +130,14 @@ public class AppProperties {
 
     /**
      * 对象存储（MinIO / S3 兼容）。
-     * <p>默认关闭：单机运行时媒体、关键帧、报告都落本地磁盘，clone 下来就能跑。
-     * 开启后同一套接口写到桶里，容器部署时多个副本共享同一份素材。
+     * <p>这是运行依赖：凭证缺失时启动即失败，不存在「落本地也能跑」的降级模式。
+     * 端点、凭证与实际桶在 Compose 里指向私有网络内的服务。
      */
     public static class ObjectStorage {
         private String endpoint = "http://127.0.0.1:9000";
         private String accessKey = "minioadmin";
         private String secretKey = "minioadmin";
         private String bucket = "video-studio";
-        /** 浏览器直连桶的地址前缀；为空表示仍由本服务代理转发 */
-        private String publicBaseUrl = "";
 
         public String getEndpoint() {
             return endpoint;
@@ -171,14 +169,6 @@ public class AppProperties {
 
         public void setBucket(String bucket) {
             this.bucket = bucket;
-        }
-
-        public String getPublicBaseUrl() {
-            return publicBaseUrl;
-        }
-
-        public void setPublicBaseUrl(String publicBaseUrl) {
-            this.publicBaseUrl = publicBaseUrl;
         }
     }
 

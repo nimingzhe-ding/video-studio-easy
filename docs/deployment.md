@@ -18,6 +18,8 @@ docker compose ps
 
 默认只有应用绑定主机 127.0.0.1:9090，供 HTTPS 反向代理访问。中间件端口仅在容器网络可见。代理需要允许大文件、Range 请求、WebSocket Upgrade 与 SSE，SSE 路径应关闭代理缓冲。
 
+代理必须转发并覆盖 `X-Forwarded-For`：应用默认 `FORWARD_HEADERS_STRATEGY=native`，由 Tomcat 从该头取真实来源地址。登录与注册按来源 IP 限流，如果代理不转发此头，所有请求会被算成同一个来源，限流退化为全站共享一个桶。只有在代理不转发、且只能靠 `remoteAddr` 计数的环境下才改为 `none`。
+
 SESSION_COOKIE_SECURE=true 适用于 HTTPS；本机 HTTP 验证时才设为 false。生产不要通过开放数据库和 Broker 端口解决连通问题。
 
 首次启动创建 AUTH_ADMIN_USERNAME。AUTH_ADMIN_PASSWORD 至少 12 位，首次创建后不会在重启时覆盖已有密码。AUTH_REGISTRATION_ENABLED 默认 false。

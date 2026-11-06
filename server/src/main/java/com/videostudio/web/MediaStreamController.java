@@ -1,6 +1,7 @@
 package com.videostudio.web;
 
 import com.videostudio.common.ApiException;
+import com.videostudio.common.ApiResponse;
 import com.videostudio.common.Texts;
 import com.videostudio.config.AppProperties;
 import com.videostudio.domain.MediaAsset;
@@ -30,6 +31,7 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -247,18 +249,23 @@ public class MediaStreamController {
         }
     }
 
-    /** 兼容部分浏览器对 video 的预检请求 */
+    /**
+     * 兼容部分浏览器对 video 的预检请求。
+     * <p>和其余接口一样包一层 ApiResponse：前端 request() 统一取 payload.data，
+     * 返回裸 Map 会让调用方拿到 undefined。
+     */
     @GetMapping("/api/media/{id}/info")
-    public Map<String, Object> info(@PathVariable long id) {
+    public ApiResponse<Map<String, Object>> info(@PathVariable long id) {
         MediaAsset asset = requireAsset(id);
-        return Map.of(
-                "id", asset.id(),
-                "name", asset.name(),
-                "kind", asset.kind().name(),
-                "durationMs", asset.durationMs(),
-                "sizeBytes", asset.sizeBytes(),
-                "playable", !Texts.isBlank(asset.storagePath()),
-                "stream", "/api/media/" + asset.id() + "/stream");
+        Map<String, Object> info = new LinkedHashMap<>();
+        info.put("id", asset.id());
+        info.put("name", asset.name());
+        info.put("kind", asset.kind().name());
+        info.put("durationMs", asset.durationMs());
+        info.put("sizeBytes", asset.sizeBytes());
+        info.put("playable", !Texts.isBlank(asset.storagePath()));
+        info.put("stream", "/api/media/" + asset.id() + "/stream");
+        return ApiResponse.success(info);
     }
 
     /** 保留给需要直接下载原片的场景 */
