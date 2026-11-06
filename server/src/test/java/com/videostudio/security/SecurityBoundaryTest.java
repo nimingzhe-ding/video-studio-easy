@@ -42,8 +42,25 @@ class SecurityBoundaryTest {
     @Test void closedRegistrationCannotBeBypassed() throws Exception {
         mvc.perform(post("/api/auth/register").with(csrf()).contentType("application/json").content("{\"username\":\"user\",\"password\":\"long-password\"}")).andExpect(status().isForbidden());
     }
+    /**
+     * 归属校验必须验证「判定结果」，而不只是「mock 返回了 null」。
+     * <p>这里显式让 OwnerGuard 的归属查询返回 0 与 1：0 表示这条记录不属于当前用户，
+     * 1 表示属于。两条断言合起来才说明「越权拿不到、有权限拿得到」；
+     * 单看 404 那条只能证明 SQL 没抛异常。
+     */
     @WithMockUser(username="7") @Test void anotherUsersReportReturns404() throws Exception {
+        org.mockito.Mockito.when(jdbc.queryForObject(org.mockito.ArgumentMatchers.contains("FROM analysis_job j JOIN media_asset m"),
+                org.mockito.ArgumentMatchers.eq(Long.class), org.mockito.ArgumentMatchers.eq(99L), org.mockito.ArgumentMatchers.eq(7L)))
+            .thenReturn(0L);
         mvc.perform(get("/api/jobs/99/report")).andExpect(status().isNotFound());
+    }
+
+    @WithMockUser(username="7") @Test void ownReportIsServed() throws Exception {
+        org.mockito.Mockito.when(jdbc.queryForObject(org.mockito.ArgumentMatchers.contains("FROM analysis_job j JOIN media_asset m"),
+                org.mockito.ArgumentMatchers.eq(Long.class), org.mockito.ArgumentMatchers.eq(5L), org.mockito.ArgumentMatchers.eq(7L)))
+            .thenReturn(1L);
+        mvc.perform(get("/api/jobs/5/report")).andExpect(status().isOk())
+            .andExpect(jsonPath("$.data").value("private"));
     }
     @WithMockUser(username="7") @Test void normalUserCannotManageAccounts() throws Exception {
         mvc.perform(get("/api/admin/users")).andExpect(status().isForbidden());
