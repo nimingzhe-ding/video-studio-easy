@@ -65,7 +65,7 @@ public class MediaController {
 
     @GetMapping("/{id}/jobs")
     public ApiResponse<?> jobs(@PathVariable long id) {
-        return ApiResponse.success(jobRepository.listByAsset(id));
+        return ApiResponse.success(jobRepository.listByAssetForOwner(id));
     }
 
     /** 删除媒体：连带其任务、证据、报告与磁盘目录，避免留下孤儿数据 */

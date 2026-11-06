@@ -62,8 +62,25 @@ public class JobRepository {
         return jdbc.query("SELECT j.* FROM analysis_job j JOIN media_asset m ON m.id=j.asset_id WHERE m.owner_id=? ORDER BY j.id DESC LIMIT ?", ROW, current.id(), limit);
     }
 
+    /**
+     * 某个素材下的全部任务，不做归属过滤。
+     * <p>只给流水线内部用（证据复用等后台线程场景）：那里没有 SecurityContext，
+     * 也不能因为「谁在跑」而改变取值。对外接口请用 {@link #listByAssetForOwner(long)}。
+     */
     public List<AnalysisJob> listByAsset(long assetId) {
         return jdbc.query("SELECT * FROM analysis_job WHERE asset_id = ? ORDER BY id DESC", ROW, assetId);
+    }
+
+    /**
+     * 给接口层用的版本：带上 owner 过滤。
+     * <p>入口的 {@link com.videostudio.security.OwnerGuard} 已经校验过素材归属，
+     * 这里再过滤一次是纵深防御——仓储层不应该依赖调用方一定先做过校验。
+     */
+    public List<AnalysisJob> listByAssetForOwner(long assetId) {
+        return jdbc.query("""
+                SELECT j.* FROM analysis_job j JOIN media_asset m ON m.id = j.asset_id
+                WHERE j.asset_id = ? AND m.owner_id = ? ORDER BY j.id DESC
+                """, ROW, assetId, current.id());
     }
 
     public void updateProgress(long id, JobStage stage, int progress) {
