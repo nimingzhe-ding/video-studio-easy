@@ -14,7 +14,9 @@
 | --- | --- | --- | --- |
 | 提交到消息队列 | `AnalysisDispatchService` 直接投 RocketMQ，靠“内容指纹 + 目标”加锁防重复 | 任务与 `job_outbox` 同事务写入，Broker 确认后才标记已发送 | 本项目更可靠 |
 | 消费幂等 | Redisson 锁 + 幂等结果查询 | Redisson 锁 + 状态与 generation 双校验，旧代次消息直接确认 | 相当 |
-| 投递失败重试 | RocketMQ 有限重投；失败入表，管理端可 replay | RocketMQ 有限重投；落 `failed_delivery`，管理端可查询与重投 | 相当 |
+| 投递失败重试 | RocketMQ 有限重投；失败入 `failed_analysis_task`，管理端可 replay，同一条只能重放一次 | RocketMQ 有限重投；落 `failed_delivery`，管理端可查询与重投，`replayed_at` 保证幂等 | 相当 |
+| 毒消息可观测 | 缺字段时写哨兵值落台账，占位记录拒绝重放 | `jobId` 非法时直接抛错，不落库 | **参考领先** |
+| 错误信息脱敏 | `sanitizeError` 用三条正则抹掉 Bearer / api_key / sk- 前缀 | 无，错误原文截断 300 字入库 | **参考领先** |
 | 执行者失联 | 未见自动回收 | `StaleJobReaper`：抢锁成功 + 15 分钟无进度才重新排队，自动重跑有上限 | 本项目 |
 | 分片上传 | 5 MB 分片，Redis 记录进度，MinIO 合并 | 8 MB 分片，MySQL 记进度 + 分片本身入 S3，跨实例可续传 | 相当 |
 | 任务断点 | MySQL 为真源 + Redis 热缓存，持久化 VideoContext、分块、计划与 Critic 状态 | 按阶段落 `job_checkpoint`，复用已产出的转写与画面证据 | 参考恢复粒度更细 |
@@ -26,8 +28,8 @@
 | 认证 | 自写 `AuthInterceptor` + Redis 会话；开放注册 | Spring Security 会话 + BCrypt + CSRF；注册默认关闭，首次部署由环境变量建管理员 | 本项目基线更标准 |
 | 数据归属 | 按 `userId` 过滤 | `owner_id` + `OwnerGuard` 拦截器按 `/api/media`、`/api/jobs` 前缀统一校验 | 相当 |
 | 每用户限流 | Redisson `RRateLimiter`：`limit:ai:user:<id>` + `limit:ai:global` | 提交与上传按用户、追问按任务限流（每分钟），登录注册按 IP | 相当 |
-| 成本预算 | 无 token 预算 | 单任务 + 全站每日 + 单用户每日三层 token 预算 | 本项目 |
-| 用户级成本隔离 | 用户的 AI 调用速率受限 | 用户每日额度用尽只挡住该用户，不影响其他人 | 相当 |
+| 成本预算 | `agent.budget.max-estimated-tokens` / `max-estimated-cost`，单任务估算上限 | 单任务 + 全站每日 + 单用户每日三层 token 预算 | 本项目维度更全 |
+| 用户级成本隔离 | 无，只有用户级速率限制 | 用户每日额度用尽只挡住该用户，不影响其他人 | 本项目 |
 | 管理端 | 失败任务列表 + `POST /{id}/replay` | 账户列表与创建 + 失败投递列表与重投 | 相当 |
 | 对外开放 | 无 API token | 无 API token | 都没做 |
 
@@ -36,11 +38,11 @@
 | 能力 | 参考项目 | 本项目 | 结论 |
 | --- | --- | --- | --- |
 | 时序结构 | 统一 `VideoSegment`（语音 + OCR + 关键帧 + 时间戳） | 转写、画面、分块分表存储，统一毫秒时间轴与 `[mm:ss]` 锚点 | 相当，取舍不同 |
-| 分析模式 | `ModeRegistry` / `ModeProfile` 注册表 | `modes.json` + `ModeRegistry`，外置文件可覆盖或追加 | 相当 |
+| 分析模式 | `ModeRegistry` 持 `EnumMap`，构造器里 `register(...)`；新增模式仍要改枚举与 Java | `modes.json` + `ModeRegistry`，外置文件可覆盖或追加，不改代码 | 本项目可扩展性更强 |
 | 混合检索 | 关键词 + Qdrant 语义召回 TopK | `0.60 语义 + 0.25 关键词 + 0.15 画面关键词` 加权 | 相当 |
 | 服务不可用 | 明确降级：Qdrant/Embedding 失败退关键词、模式路由回退 `GENERAL`、ASR/OCR 单路失败保留另一路 | 严格失败：模型、向量或证据校验不过即任务失败 | 目标不同，见下 |
 | 说话人 | 无 | 音高聚类近似分离 | 本项目 |
-| Agent 评测 | `AgentEvaluationService` + 离线评测 runner + telemetry 计数 | 无 | 参考领先 |
+| Agent 评测 | `AgentEvaluationService` + 4 条 golden case 的离线 runner + telemetry 计数 | 无 | 参考领先 |
 
 “严格失败”不是能力缺失，而是产品取舍：参考项目优先保证主链路不断，本项目优先保证“不产出看起来正常但用错提纲的报告”。代价是单点故障会直接暴露给用户。
 
@@ -56,9 +58,13 @@
 
 ## 五、参考项目有、我们没有
 
-1. **Agent 离线评测**：可回归地衡量提示词与检索改动是否变好。
-2. **链接导入与演示模式**：降低首次上手门槛。
-3. **对外开放接口**：API token 与 webhook，两边都没做，不构成差异。
+1. **错误信息脱敏**：它入库前抹掉 Bearer / api_key / sk- 前缀，我们直接把错误原文截断存库。
+2. **毒消息落台账**：它给缺字段的消息写哨兵值保证台账可写、管理台可见；我们对非法 `jobId` 直接抛错，运维无从得知。
+3. **Agent 离线评测**：4 条 golden case 的离线 runner，可回归地衡量提示词与检索改动。
+4. **链接导入**：`POST /media/upload-url` + yt-dlp。
+5. **Chrome 扩展**：侧边栏提交、进度、时间戳跳回当前标签页。
+6. **前端单测**：5 个 `.test.js`（api、分片上传、事件、工作区、时间戳），我们只有 e2e。
+7. **对外开放接口**：API token 与 webhook，两边都没做，不构成差异。
 
 ## 六、我们有、参考项目没有
 
@@ -69,6 +75,8 @@
 5. **标准运维面**：Prometheus 指标、就绪探针、CI 校验链路。
 6. **用户级成本隔离**：单用户每日额度，防止一个人吃光全站额度。
 7. **失败投递运维台**：管理端可列出并重投死信任务，不必进数据库。
+8. **配置驱动的分析模式**：新增模式加一份 JSON，不改 Java。参考项目的 `ModeRegistry` 是构造器里硬编码的 `EnumMap`。
+9. **后端测试规模**：111 个用例 vs 26 个。
 
 ## 七、验证状态
 
@@ -79,8 +87,8 @@
 ## 八、结论
 
 - **已具备**：可部署的产品形态——可靠投递、多用户隔离与成本隔离、对象存储与向量库、可观测与失败可解释、死信可运维、模式可配置。
-- **尚不具备平台能力**：对外开放接口、Agent 离线评测。
+- **尚不具备平台能力**：对外开放接口、Agent 离线评测；运维侧的敏感信息脱敏与毒消息台账也还欠着。
 
-按投入产出排序，补齐顺序建议为：API token 与 webhook → Agent 离线评测。
+按投入产出排序，补齐顺序建议为：错误信息脱敏与毒消息落台账 → Agent 离线评测 → API token 与 webhook → 链接导入。
 
 参考项目来源：[仓库](https://github.com/nimingzhe-ding/DOVideo-AI/tree/df4fa83)。
