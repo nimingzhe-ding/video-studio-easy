@@ -155,6 +155,12 @@ public class AnalysisPipeline {
         int attempts = 1;
         /** 本次是否在续跑上一个未完成的断点 */
         boolean resuming = false;
+        /**
+         * 当前这份转写是否已经过说话人分离。
+         * <p>必须随断点一起落库：重跑时任务还没有报告，证据复用无从读取 trace，
+         * 只能靠断点判断「已落库的转写要不要重做一次」。
+         */
+        boolean speakerSeparated = false;
 
         Run(AnalysisJob job, MediaAsset asset, Path source) {
             this.job = job;
@@ -194,12 +200,20 @@ public class AnalysisPipeline {
                         java.time.Duration.between(stageStarted, now));
                 // 进入新阶段说明上一阶段已经做完，这里落一次断点。
                 // 断点写入失败时停止，保留可恢复的任务状态。
-                checkpoints.save(jobId,current,null,attempts);
+                checkpoints.save(jobId,current,checkpointPayload(),attempts);
             }
             stageStarted = now;
             current = stage;
             jobRepository.updateProgress(jobId, stage, stage.floor());
             emit(stage, JobEvent.TYPE_STAGE, "info", stage.floor(), message);
+        }
+
+        /**
+         * 断点的附加信息。目前只记录「转写是否带说话人标签」，
+         * 因为它是证据复用唯一无法从数据库其他表推断出来的等价条件。
+         */
+        String checkpointPayload() {
+            return AnalysisPipeline.checkpointPayload(speakerSeparated);
         }
 
         void warn(String message) {
@@ -230,7 +244,7 @@ public class AnalysisPipeline {
             run.emit(JobStage.DONE, JobEvent.TYPE_DONE, "info", 100, "分析完成");
             // DONE 是终态，不走 stage()，所以断点要在这里显式落一次；
             // 否则断点会永远停在最后一个真实阶段，重试时白跑一遍报告
-            checkpoints.save(jobId,JobStage.DONE,null,run.attempts);
+            checkpoints.save(jobId,JobStage.DONE,run.checkpointPayload(),run.attempts);
             status = "succeeded";
         } catch (Exception e) {
             log.error("任务 {} 失败", jobId, e);
@@ -321,6 +335,9 @@ public class AnalysisPipeline {
         } else {
             run.warn("该文件没有音频轨，跳过语音识别");
         }
+        // 必须在下一个 stage() 之前记到 Run 上：切阶段会写断点，重跑时「这份转写要不要重做」
+        // 就靠断点里的这个标记来判断
+        run.speakerSeparated = separated;
 
         // ---- 画面：关键帧 → OCR
         List<VisualEvidence> visuals = List.of();
@@ -549,5 +566,13 @@ public class AnalysisPipeline {
     private static DocxExporter.Figure figure(VisualEvidence visual) {
         String caption = Texts.isBlank(visual.ocrText()) ? visual.caption() : visual.ocrText();
         return new DocxExporter.Figure(visual.timeMs(), Path.of(visual.framePath()), caption);
+    }
+
+    /**
+     * 断点 payload 的格式与解析放在一处，因为写入方（本类）和读取方
+     * （{@link EvidenceService} 判断能否复用）必须严格一致。
+     */
+    static String checkpointPayload(boolean speakerSeparated) {
+        return speakerSeparated ? "{\"speakerSeparation\":true}" : null;
     }
 }
