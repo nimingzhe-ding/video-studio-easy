@@ -50,6 +50,7 @@ public class CleanupService {
     private final org.redisson.api.RedissonClient locks;
     private final org.springframework.transaction.support.TransactionTemplate transactions;
     private final org.springframework.jdbc.core.JdbcTemplate jdbc;
+    private final com.videostudio.infra.JobOwners owners;
 
     public CleanupService(MediaRepository mediaRepository, JobRepository jobRepository,
                           JobEventRepository eventRepository, TranscriptRepository transcriptRepository,
@@ -57,8 +58,9 @@ public class CleanupService {
                           ReportRepository reportRepository, ChatRepository chatRepository,
                           JobService jobService, Storage storage,
                           MediaObjects objects, VectorStore vectors, org.redisson.api.RedissonClient locks,
-                          org.springframework.transaction.support.TransactionTemplate transactions, org.springframework.jdbc.core.JdbcTemplate jdbc) {
-        this.locks=locks; this.transactions=transactions; this.jdbc=jdbc;
+                          org.springframework.transaction.support.TransactionTemplate transactions,
+                          org.springframework.jdbc.core.JdbcTemplate jdbc, com.videostudio.infra.JobOwners owners) {
+        this.locks=locks; this.transactions=transactions; this.jdbc=jdbc; this.owners=owners;
         this.mediaRepository = mediaRepository;
         this.jobRepository = jobRepository;
         this.eventRepository = eventRepository;
@@ -145,6 +147,8 @@ public class CleanupService {
         reportRepository.deleteByJob(jobId);
         chatRepository.clear(jobId);
         jobRepository.delete(jobId);
+        // 归属缓存跟着任务走，否则删除大量任务后 map 会一直留着旧条目
+        owners.forget(jobId);
     }
 
     /** 目录删除失败只记日志：库里记录已清掉，残留文件不该阻塞用户操作 */

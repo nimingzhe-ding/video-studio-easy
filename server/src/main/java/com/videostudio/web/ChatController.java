@@ -43,6 +43,7 @@ public class ChatController {
                 java.time.Duration.ofMinutes(1), "该任务的追问过于频繁");
         budget.enter(id);
         try {
+            // requireAvailable() 会按当前线程绑定的任务反查归属，同时检查全站与用户额度
             budget.requireAvailable();
             String answer = followUpService.ask(id, body == null ? null : body.question());
             return ApiResponse.success(Map.of("answer", answer));

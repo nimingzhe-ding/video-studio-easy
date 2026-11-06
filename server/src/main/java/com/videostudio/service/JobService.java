@@ -20,10 +20,13 @@ public class JobService {
     private final JobRepository jobs; private final ModeRouter router; private final BudgetGuard budget;
     private final JdbcTemplate jdbc; private final TransactionTemplate transactions;
     private final RedisSupport redis; private final OwnerGuard owner; private final RedissonClient locks;
+    private final com.videostudio.security.CurrentUser current;
     public JobService(JobRepository jobs,ModeRouter router,BudgetGuard budget,JdbcTemplate jdbc,
-            TransactionTemplate transactions,RedisSupport redis,OwnerGuard owner,RedissonClient locks) {
+            TransactionTemplate transactions,RedisSupport redis,OwnerGuard owner,RedissonClient locks,
+            com.videostudio.security.CurrentUser current) {
         this.jobs=jobs; this.router=router; this.budget=budget; this.jdbc=jdbc;
         this.transactions=transactions; this.redis=redis; this.owner=owner; this.locks=locks;
+        this.current=current;
     }
     public AnalysisJob submit(long assetId,AnalysisMode mode,String goal,String title) {
         owner.media(assetId);
@@ -52,7 +55,24 @@ public class JobService {
         return submit(old.assetId(),mode==null?old.mode():mode,goal==null?old.focus():goal,old.title());
     }
     public AnalysisJob retry(long jobId) {
-        owner.job(jobId); requireBudget();
+        owner.job(jobId);
+        return retryInternal(jobId, true);
+    }
+
+    /**
+     * 管理员重投：跳过归属校验与额度检查，但保留与用户重试完全相同的状态机
+     * （递增 generation + 写发件箱）。
+     * <p>不查额度是有意的：管理员清理的是已经花过钱的死信，如果卡在今日额度上，
+     * 死信就永远清不掉，而这恰恰是运维最需要恢复的时候。
+     */
+    public AnalysisJob retryAsAdmin(long jobId) {
+        return retryInternal(jobId, false);
+    }
+
+    private AnalysisJob retryInternal(long jobId, boolean checkBudget) {
+        if (checkBudget) {
+            requireBudget();
+        }
         var lock=locks.getLock("worker:job:"+jobId);
         boolean acquired=false;
         try {
@@ -74,7 +94,8 @@ public class JobService {
         owner.job(id);
         return jdbc.update("UPDATE analysis_job SET status='CANCELED',updated_at=NOW(3),finished_at=NOW(3) WHERE id=? AND status IN ('PENDING','RUNNING','FAILED')",id)>0;
     }
-    private void requireBudget() { String reason=budget.rejectReason(); if(reason!=null) throw new ApiException(429,reason); }
+    /** 提交前检查额度：全站日额度 + 当前用户日额度 */
+    private void requireBudget() { String reason=budget.rejectReason(current.id()); if(reason!=null) throw new ApiException(429,reason); }
     private static String digest(String value) {
         try { return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8))); }
         catch(java.security.NoSuchAlgorithmException ex) { throw new IllegalStateException(ex); }
