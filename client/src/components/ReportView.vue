@@ -9,7 +9,9 @@ const props = defineProps({
   jobId: { type: Number, required: true },
   asset: { type: Object, default: null },
   job: { type: Object, default: null },
-  jobLoading: { type: Boolean, default: false }
+  jobLoading: { type: Boolean, default: false },
+  /** code → label，来自后端注册表；缺省时退回内置表 */
+  modeLabels: { type: Object, default: () => ({}) }
 });
 const emit = defineEmits(['seek', 'notice']);
 
@@ -23,7 +25,7 @@ const meta = computed(() => {
   return {
     duration: props.asset ? formatDuration(props.asset.durationMs) : '',
     size: props.asset ? formatSize(props.asset.sizeBytes) : '',
-    mode: props.job ? MODE_LABELS[props.job.mode] || props.job.mode : '',
+    mode: props.job ? (props.modeLabels[props.job.mode] || MODE_LABELS[props.job.mode] || props.job.mode) : '',
     engine: engineText(trace),
     asr: trace.asrEngine || '',
     rounds: trace.rounds,

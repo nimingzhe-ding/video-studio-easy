@@ -1,11 +1,13 @@
 <script setup>
 import { computed } from 'vue';
-import { MODE_LABELS, STAGE_LABELS, STATUS_LABELS, formatRelative } from '../format';
+import { STAGE_LABELS, STATUS_LABELS, formatRelative } from '../format';
 
 const props = defineProps({
   job: { type: Object, required: true },
   active: { type: Boolean, default: false },
-  assetName: { type: String, default: '' }
+  assetName: { type: String, default: '' },
+  /** code → label，来自后端注册表；缺省时退回 code 本身 */
+  modeLabels: { type: Object, default: () => ({}) }
 });
 const emit = defineEmits(['open', 'cancel', 'remove']);
 
@@ -46,7 +48,7 @@ const code = computed(() => `#${String(props.job.id).padStart(3, '0')}`);
       <div class="item-sub">
         <span class="mono" style="font-size: 10.5px">{{ code }}</span>
         <span class="sep">·</span>
-        <span>{{ MODE_LABELS[job.mode] || job.mode }}</span>
+        <span>{{ modeLabels[job.mode] || job.mode }}</span>
         <span class="sep">·</span>
         <span v-if="running">{{ stageText }} {{ job.progress }}%</span>
         <span v-else>{{ STATUS_LABELS[job.status] || job.status }}</span>

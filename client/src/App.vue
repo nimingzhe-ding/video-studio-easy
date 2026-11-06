@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import { api, CHUNK_THRESHOLD, chunkUploadId } from './api';
 import {
   MODE_LABELS,
+  modeLabels,
   STAGE_LABELS,
   STATUS_LABELS,
   formatDateTime,
@@ -50,10 +51,16 @@ const form = reactive({ mode: 'AUTO', goal: '', title: '' });
 const isAdmin = computed(() => props.account?.role === 'ADMIN');
 const deliveries = ref([]);
 
-const modes = [
-  { value: 'AUTO', label: '自动判断' },
-  ...Object.entries(MODE_LABELS).map(([value, label]) => ({ value, label }))
-];
+/**
+ * 可选模式：清单来自后端注册表（runtime.modes），新增模式不需要前端发版。
+ * 接口还没返回时用内置表兜底，避免下拉框在首屏是空的。
+ */
+const modes = computed(() => {
+  const listed = (runtime.value.modes || []).map((item) => ({ value: item.code, label: item.label }));
+  const source = listed.length ? listed : Object.entries(MODE_LABELS).map(([value, label]) => ({ value, label }));
+  return [{ value: 'AUTO', label: '自动判断' }, ...source];
+});
+const labelOf = computed(() => modeLabels(runtime.value.modes));
 
 const TABS = [
   { key: 'report', label: '报告' },
@@ -704,6 +711,7 @@ async function retryCurrentJob() {
               :job="item"
               :active="selected?.id === item.id"
               :asset-name="assetNames[item.assetId] || ''"
+              :mode-labels="labelOf"
               @open="open"
               @cancel="cancelJob"
               @remove="removeJob"
@@ -819,7 +827,7 @@ async function retryCurrentJob() {
               <div>
                 <dt>模式</dt>
                 <dd>
-                  {{ MODE_LABELS[job.mode] || job.mode }}
+                  {{ labelOf[job.mode] || job.mode }}
                   <span v-if="job.modeSource === 'AUTO'" style="color: var(--faint)"> / 模型判定</span>
                 </dd>
               </div>
@@ -886,6 +894,7 @@ async function retryCurrentJob() {
               :asset="asset"
               :job="job"
               :job-loading="running"
+              :mode-labels="labelOf"
               @seek="seek"
               @notice="notify"
             />
@@ -943,7 +952,7 @@ async function retryCurrentJob() {
                     <div class="item-title">{{ item.title || item.focus || '未命名分析' }}</div>
                     <div class="item-sub">
                       <span class="mono" style="font-size: 10.5px">#{{ String(item.id).padStart(3, '0') }}</span>
-                      · {{ MODE_LABELS[item.mode] }} · {{ STATUS_LABELS[item.status] }} ·
+                      · {{ labelOf[item.mode] || item.mode }} · {{ STATUS_LABELS[item.status] }} ·
                       {{ formatDateTime(item.createdAt) }}
                     </div>
                   </div>

@@ -69,12 +69,30 @@ export function formatRelative(iso) {
   return formatDateTime(iso);
 }
 
+/**
+ * 模式标签的兜底表。
+ *
+ * <p>真实清单来自后端 /api/jobs/runtime 的 modes 字段——模式已改为配置驱动，
+ * 新增模式不该要求前端跟着发版。这里只用于接口尚未返回、或历史任务用了
+ * 已经下线的模式时兜底显示。
+ */
 export const MODE_LABELS = {
   GENERAL: '通用理解',
   LEARNING: '学习笔记',
   REVIEW: '评审纪要',
   CREATION: '创作素材'
 };
+
+/** 把后端返回的模式清单合成 code → label 映射；接口不可用时退回内置表 */
+export function modeLabels(runtimeModes) {
+  const map = { ...MODE_LABELS };
+  for (const item of runtimeModes || []) {
+    if (item && item.code) {
+      map[item.code] = item.label || item.code;
+    }
+  }
+  return map;
+}
 
 export const STATUS_LABELS = {
   PENDING: '排队中',
