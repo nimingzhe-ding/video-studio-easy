@@ -137,7 +137,7 @@ public class FollowUpService {
         return result == null ? null : result.content();
     }
 
-    /** 离线兜底：直接从转写里找最相关的几段，明确标注「未接入大模型」 */
+    /** 音视频总时长，用于给追问说明「这段话出自多长的素材」 */
     private long durationOf(List<TranscriptSegment> segments, List<VisualEvidence> visuals) {
         long end = 0;
         for (TranscriptSegment s : segments) {

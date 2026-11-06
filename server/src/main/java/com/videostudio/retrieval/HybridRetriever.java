@@ -6,6 +6,8 @@ import com.videostudio.domain.ContextChunk;
 import com.videostudio.domain.TranscriptSegment;
 import com.videostudio.domain.VisualEvidence;
 import com.videostudio.llm.LlmGateway;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -20,6 +22,8 @@ import java.util.Map;
  */
 @Component
 public class HybridRetriever {
+
+    private static final Logger log = LoggerFactory.getLogger(HybridRetriever.class);
 
     private static final double W_SEMANTIC = 0.60;
     private static final double W_KEYWORD = 0.25;
@@ -53,10 +57,11 @@ public class HybridRetriever {
         }
         List<String> queryTerms = Texts.keywords(question, 10);
         List<Double> queryVector = llm.embed(question);
-        // 语义分交给向量库（未启用时是内存实现）；拿不到就用 0，纯靠关键词也能出结果
+        // 语义分来自 Qdrant；拿不到（没索引、维度不符、向量库抖动）就整条退化为关键词匹配，
+        // 而不是让检索直接失败——追问是只读操作，没理由因为索引缺失就 500。
         Map<Integer, Double> semantic = queryVector.isEmpty()
                 ? Map.of()
-                : vectors.semanticScores(jobId, chunks, queryVector);
+                : semanticScores(jobId, chunks, queryVector);
 
         List<Hit> hits = new ArrayList<>();
         for (ContextChunk chunk : chunks) {
@@ -73,6 +78,16 @@ public class HybridRetriever {
         hits.sort(Comparator.comparingDouble(Hit::score).reversed());
         int topK = Math.max(1, props.getTopKChunks());
         return new ArrayList<>(hits.subList(0, Math.min(topK, hits.size())));
+    }
+
+    /** 语义分来自向量库；任何运行时异常都当作「没有语义分」，让关键词分兜住。 */
+    private Map<Integer, Double> semanticScores(long jobId, List<ContextChunk> chunks, List<Double> queryVector) {
+        try {
+            return vectors.semanticScores(jobId, chunks, queryVector);
+        } catch (RuntimeException ex) {
+            log.warn("语义检索不可用，本次按关键词匹配: {}", ex.getMessage());
+            return Map.of();
+        }
     }
 
     /** 余弦相似度；维度不一致或为空时返回 0（避免异常打断检索） */

@@ -702,7 +702,7 @@ async function retryCurrentJob() {
                 {{ runtime.objectStorageEnabled ? runtime.objectStorage || '已连接' : '不可用' }}
               </span>
             </div>
-            <div class="env-row" title="语义检索优先走向量库，连不上时自动退回内存余弦与关键词">
+            <div class="env-row" title="语义召回走向量库；索引不可用时本次检索退化为关键词匹配">
               <span class="k">向量检索</span>
               <span class="badge" :class="runtime.vectorStoreEnabled ? 'accent' : ''" style="margin-left: auto">
                 {{ runtime.vectorStoreEnabled ? runtime.vectorStore || '已连接' : '不可用' }}

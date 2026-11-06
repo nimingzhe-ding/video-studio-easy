@@ -179,7 +179,7 @@ public class JobEventController {
         info.put("visionCaptionEnabled", ai.visionCaptionEnabled());
         info.put("visionModel", ai.getVisionModel());
         info.put("realtimeEnabled", realtime.ready());
-        // 诊断用：一眼看出当前部署跑的是本地磁盘 + 内存检索，还是接了外部中间件
+        // 诊断用：把当前生效的实现暴露给前端，避免「以为接了对象存储/向量库其实没接」
         info.put("objectStorage", objects.store().provider());
         info.put("objectStorageEnabled", objects.enabled());
         info.put("vectorStore", vectors.provider());

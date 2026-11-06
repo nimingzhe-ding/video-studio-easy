@@ -373,12 +373,18 @@ public class AnalysisPipeline {
             run.emit(JobStage.CHUNK, JobEvent.TYPE_METRIC, "info", JobStage.CHUNK.floor(),
                     "生成 %d 个上下文分块".formatted(chunks.size()));
         }
-        // 向量库只是语义检索的加速器：写失败不影响后续，检索端会自动退回内存计算
+        // 向量索引失败不让整个任务失败：分块与关键词已经在库里，检索还能靠词项命中出结果，
+        // 只是少了语义召回这一路。写失败要显式告警，而不是静默降级成「看起来正常」。
         if (vectors.enabled()) {
-            vectors.index(asset.id(), run.jobId, chunks);
             long withVector = chunks.stream().filter(c -> !c.embedding().isEmpty()).count();
-            run.emit(JobStage.CHUNK, JobEvent.TYPE_LOG, "info", JobStage.CHUNK.floor(),
-                    "向量索引 %s：%d/%d 个分块".formatted(vectors.provider(), withVector, chunks.size()));
+            try {
+                vectors.index(asset.id(), run.jobId, chunks);
+                run.emit(JobStage.CHUNK, JobEvent.TYPE_LOG, "info", JobStage.CHUNK.floor(),
+                        "向量索引 %s：%d/%d 个分块".formatted(vectors.provider(), withVector, chunks.size()));
+            } catch (RuntimeException ex) {
+                run.emit(JobStage.CHUNK, JobEvent.TYPE_WARNING, "warn", JobStage.CHUNK.floor(),
+                        "向量索引失败，本次检索退化为关键词匹配：%s".formatted(ex.getMessage()));
+            }
         }
 
         // ---- Agent
