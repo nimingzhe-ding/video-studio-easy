@@ -27,8 +27,6 @@ import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -45,11 +43,6 @@ public class JobEventController {
 
     private static final Logger log = LoggerFactory.getLogger(JobEventController.class);
     private static final long STREAM_TIMEOUT_MS = Duration.ofMinutes(30).toMillis();
-    private static final ScheduledExecutorService PUMPS = Executors.newScheduledThreadPool(4, r -> {
-        Thread t = new Thread(r, "sse-pump");
-        t.setDaemon(true);
-        return t;
-    });
 
     private final JobRepository jobRepository;
     private final JobEventRepository eventRepository;
@@ -98,54 +91,66 @@ public class JobEventController {
 
         // 事件写入时会广播唤醒，所以这里不必高频轮询：
         // 正常情况被外部唤醒（毫秒级），信号丢失时靠 3 秒一次的兜底轮询补上。
+        //
+        // 每个连接一个虚拟线程，而不是塞进固定大小的调度池：
+        // 泵线程大部分时间阻塞在 tryAcquire 上，用平台线程池时「连接数 > 池大小」的其余连接
+        // 会被饿住，事件要等到别人超时才能轮到自己；虚拟线程便宜到可以一人一个，
+        // 关闭时只要 release 一次信号，循环就会醒来并退出，不会留下常驻任务。
         AtomicBoolean closed = new AtomicBoolean(false);
         Semaphore signal = new Semaphore(0);
         AutoCloseable subscription = eventBus.subscribe(id, signal::release);
 
-        PUMPS.scheduleWithFixedDelay(() -> {
-            if (closed.get()) {
-                return;
-            }
+        Thread.ofVirtual().name("sse-pump-" + id).start(() -> {
             try {
-                // 有信号就立刻醒；没有就最多等 3 秒（兜底，防止广播丢失）
-                signal.tryAcquire(3, TimeUnit.SECONDS);
-                signal.drainPermits();
-                List<JobEvent> fresh = eventRepository.list(id, cursor.get(), 200);
-                for (JobEvent event : fresh) {
-                    if (!send(emitter, "event", event)) {
+                while (!closed.get()) {
+                    // 有信号就立刻醒；没有就最多等 3 秒（兜底，防止广播丢失）
+                    signal.tryAcquire(3, TimeUnit.SECONDS);
+                    signal.drainPermits();
+                    if (closed.get()) {
+                        return;
+                    }
+                    List<JobEvent> fresh = eventRepository.list(id, cursor.get(), 200);
+                    for (JobEvent event : fresh) {
+                        if (!send(emitter, "event", event)) {
+                            emitter.complete();
+                            return;
+                        }
+                        cursor.set(event.seq());
+                    }
+                    AnalysisJob current = jobRepository.find(id).orElse(null);
+                    if (current != null && current.status().terminal()) {
+                        send(emitter, "done", Map.of("status", current.status().name(),
+                                "progress", current.progress(),
+                                "error", current.error() == null ? "" : current.error()));
                         emitter.complete();
                         return;
                     }
-                    cursor.set(event.seq());
-                }
-                AnalysisJob current = jobRepository.find(id).orElse(null);
-                if (current != null && current.status().terminal()) {
-                    send(emitter, "done", Map.of("status", current.status().name(),
-                            "progress", current.progress(),
-                            "error", current.error() == null ? "" : current.error()));
-                    emitter.complete();
                 }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             } catch (RuntimeException e) {
                 log.debug("SSE 轮询任务 {} 失败: {}", id, e.getMessage());
             }
-        }, 200, 100, TimeUnit.MILLISECONDS);
-
-        emitter.onCompletion(() -> {
-            closed.set(true);
-            closeQuietly(subscription);
-            log.debug("SSE 任务 {} 结束", id);
         });
-        emitter.onTimeout(() -> {
+
+        // 关闭是幂等的：complete / timeout / error 可能先后都触发，只能清理一次
+        AtomicBoolean disposed = new AtomicBoolean(false);
+        Runnable dispose = () -> {
+            if (!disposed.compareAndSet(false, true)) {
+                return;
+            }
             closed.set(true);
             closeQuietly(subscription);
+            // 叫醒还停在 tryAcquire 上的泵线程，让它走到 while 条件后自然结束
+            signal.release();
+            log.debug("SSE 任务 {} 结束", id);
+        };
+        emitter.onCompletion(dispose);
+        emitter.onTimeout(() -> {
+            dispose.run();
             emitter.complete();
         });
-        emitter.onError(e -> {
-            closed.set(true);
-            closeQuietly(subscription);
-        });
+        emitter.onError(e -> dispose.run());
         return emitter;
     }
 

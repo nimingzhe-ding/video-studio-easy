@@ -57,6 +57,8 @@ class OutboxDispatcherTest {
     /**
      * 领取阶段必须把 next_attempt_at 推出租期：否则这条记录在发送过程中仍然对其它实例可见，
      * 多实例部署时会重复投递。租期（60 秒）也必须明显大于发送超时（5 秒）。
+     * <p>租期从 NOW() 起算而不是在旧值上累加：积压记录的 next_attempt_at 可能已经是几分钟前，
+     * 加 60 秒仍然在过去，租约等于没生效。
      */
     @Test void claimedRowsAreLeasedAwayFromOtherInstances() {
         var jdbc=mock(JdbcTemplate.class); var mq=mock(RocketMQTemplate.class); var metrics=mock(JobMetrics.class);
@@ -65,6 +67,6 @@ class OutboxDispatcherTest {
         when(mq.syncSend(anyString(),any(Message.class),anyLong())).thenReturn(result);
         new OutboxDispatcher(jdbc,mq,"analysis",metrics,transactions()).dispatch();
         // LEASE_SECONDS 是 int，传给 jdbc.update 时装箱成 Integer，断言要用 eq(60) 而不是 eq(60L)
-        verify(jdbc).update(contains("next_attempt_at=TIMESTAMPADD(SECOND,?,next_attempt_at)"),eq(60));
+        verify(jdbc).update(contains("next_attempt_at=TIMESTAMPADD(SECOND,?,NOW(3))"),eq(60));
     }
 }

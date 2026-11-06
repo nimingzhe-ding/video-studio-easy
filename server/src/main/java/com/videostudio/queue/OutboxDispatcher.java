@@ -75,6 +75,9 @@ public class OutboxDispatcher {
     /**
      * 短事务：锁定一批到期的记录，并把 {@code next_attempt_at} 推到租期之外。
      * <p>整个方法里只有两条 SQL，没有任何外部调用，所以事务是毫秒级的。
+     * <p>租期必须从 {@code NOW()} 起算而不是从旧值累加：积压记录（例如进程重启后）的
+     * {@code next_attempt_at} 可能已经过去几分钟，加 60 秒仍在过去，其它实例会立刻再次领取，
+     * 租约等于没生效。
      */
     private List<Map<String, Object>> claim() {
         return transactions.execute(status -> {
@@ -85,7 +88,7 @@ public class OutboxDispatcher {
                     """, BATCH);
             if (rows.isEmpty()) return rows;
             jdbc.update("""
-                    UPDATE job_outbox SET next_attempt_at=TIMESTAMPADD(SECOND,?,next_attempt_at)
+                    UPDATE job_outbox SET next_attempt_at=TIMESTAMPADD(SECOND,?,NOW(3))
                     WHERE status='PENDING' AND next_attempt_at<=NOW(3) AND id IN (%s)
                     """.formatted(rows.stream().map(r -> ((Number) r.get("id")).longValue())
                         .map(String::valueOf).collect(java.util.stream.Collectors.joining(","))),
