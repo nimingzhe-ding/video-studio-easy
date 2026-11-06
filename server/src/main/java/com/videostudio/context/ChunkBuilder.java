@@ -96,7 +96,11 @@ public final class ChunkBuilder {
         return sb.toString().strip();
     }
 
-    /** 无模型时的确定性摘要：取首句 + 关键词，保证离线也有可用内容 */
+    /**
+     * 确定性摘要：取首句 + 关键词。
+     * <p>这是分块的初始值，随后由 {@link ChunkEnricher} 用模型改写；模型不可用时任务会失败，
+     * 不会退回这份摘要作为最终产物。保留它是因为初始值决定了「模型改写失败时日志里能看到什么」。
+     */
     private static String summarize(String transcript, String ocr, List<String> keywords) {
         List<String> parts = new ArrayList<>();
         if (!Texts.isBlank(transcript)) {

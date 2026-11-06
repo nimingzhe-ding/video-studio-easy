@@ -13,8 +13,8 @@ import java.util.Optional;
  * 让整条媒体流水线复杂一个量级，而收益只是省几 MB 临时盘。所以这里的定位是
  * 「本地盘是工作区，对象存储是持久层」：算完就传上去，容器重建后还能把源文件拉回来。
  *
- * <p>未启用时用 {@link LocalObjectStore}，行为等价于「文件已经在本地，什么也不用做」，
- * 保证 clone 下来不装 MinIO 也能完整跑通。
+ * <p>对象存储是<b>运行依赖</b>，不是可选降级项：凭证缺失时 {@link MinioObjectStore}
+ * 直接拒绝启动；写入失败会抛异常让任务明确失败，而不是留下「数据库说有、桶里没有」的记录。
  */
 public interface ObjectStore {
 
@@ -23,7 +23,7 @@ public interface ObjectStore {
 
     boolean enabled();
 
-    /** 上传本地文件；失败不应该中断主流程，由实现内部记日志并返回 false */
+    /** 上传本地文件；失败抛 {@link IllegalStateException}，由调用方决定任务是否失败 */
     boolean put(String key, Path file, String contentType);
 
     /**

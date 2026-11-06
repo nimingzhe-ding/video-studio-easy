@@ -10,7 +10,11 @@ import org.springframework.stereotype.Repository;
 import java.util.ArrayList;
 import java.util.List;
 
-/** context_chunk 读写（embedding 以 JSON 数组存文本列，demo 规模下不引入向量库） */
+/**
+ * context_chunk 读写。
+ * <p>embedding 以 JSON 数组存在文本列里作为<b>本任务自己的快照</b>；语义检索走 Qdrant，
+ * 这里保存副本是为了向量索引重建失败时仍能按关键词检索、以及重跑时不必重新向量化。
+ */
 @Repository
 public class ChunkRepository {
 
