@@ -19,7 +19,7 @@ public class JobRepository {
     private static final RowMapper<AnalysisJob> ROW = (rs, i) -> new AnalysisJob(
             rs.getLong("id"),
             rs.getLong("asset_id"),
-            AnalysisMode.of(rs.getString("mode")),
+            AnalysisMode.ofCode(rs.getString("mode")),
             rs.getString("mode_source"),
             rs.getString("mode_reason"),
             rs.getString("title"),
@@ -49,7 +49,7 @@ public class JobRepository {
                                           status, stage, progress, degraded, created_at, updated_at)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
-                assetId, mode.name(), modeSource, modeReason, title, focus,
+                assetId, mode.code(), modeSource, modeReason, title, focus,
                 JobStatus.PENDING.name(), JobStage.QUEUED.name(), 0, false, Sql.now(), Sql.now());
     }
 

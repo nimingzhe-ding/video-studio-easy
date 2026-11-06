@@ -172,11 +172,12 @@ public class AnalysisAgent {
         if (critique != null && !critique.passed()) {
             user.append("PreviousCritique:\n").append(critique.render()).append('\n');
         }
-        if (mode != AnalysisMode.GENERAL) {
+        // 必需小节由模式配置决定：GENERAL 没有 sectionKeys，就不要求模型输出 sections
+        if (!mode.sectionKeys().isEmpty()) {
             user.append("\n本次分析模式的额外产物要求：").append(mode.guidance())
                     .append("\n在返回的 JSON 中额外包含 sections 数组，每个元素形如 ")
                     .append("{\"key\":\"英文标识\",\"title\":\"面向用户的标题\",\"items\":[\"要点\"]}；")
-                    .append("可用的小节（key 需完全一致）：").append(sectionKeys(mode)).append('\n');
+                    .append("可用的小节（key 需完全一致）：").append(String.join("、", mode.sectionKeys())).append('\n');
         }
         user.append("\nVideoContext:\n").append(context);
 
@@ -201,7 +202,7 @@ public class AnalysisAgent {
             throw new IllegalStateException("模型返回的证据校验结构不合法");
         }
         EvidenceValidator.Outcome outcome = EvidenceValidator.verify(draft, segments, visuals,
-                sectionKeysList(request.mode()));
+                request.mode().sectionKeys());
         return EvidenceValidator.merge(critique, outcome);
     }
 
@@ -288,18 +289,5 @@ public class AnalysisAgent {
         }
         out.sort(java.util.Comparator.comparingLong(VisualEvidence::timeMs));
         return out;
-    }
-
-    static List<String> sectionKeysList(AnalysisMode mode) {
-        return switch (mode) {
-            case GENERAL -> List.of();
-            case LEARNING -> List.of("outline", "keypoints", "quiz", "pitfalls");
-            case REVIEW -> List.of("fallacies", "exaggerations", "omissions", "doubtful");
-            case CREATION -> List.of("highlights", "titles", "intro", "script");
-        };
-    }
-
-    private static String sectionKeys(AnalysisMode mode) {
-        return String.join("、", sectionKeysList(mode));
     }
 }

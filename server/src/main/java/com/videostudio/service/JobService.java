@@ -41,7 +41,7 @@ public class JobService {
             return transactions.execute(status -> {
                 jdbc.queryForObject("SELECT id FROM media_asset WHERE id=? FOR UPDATE",Long.class,assetId);
                 var active=jdbc.queryForList("SELECT id FROM analysis_job WHERE asset_id=? AND mode=? AND focus=? AND status IN ('PENDING','RUNNING') LIMIT 1",
-                    Long.class,assetId,decision.mode().name(),focus);
+                    Long.class,assetId,decision.mode().code(),focus);
                 if(!active.isEmpty()) return jobs.find(active.get(0)).orElseThrow();
                 long id=jobs.insert(assetId,decision.mode(),mode==null?"AUTO":"USER",decision.reason(),title,focus);
                 enqueue(id);
@@ -101,11 +101,8 @@ public class JobService {
         catch(java.security.NoSuchAlgorithmException ex) { throw new IllegalStateException(ex); }
     }
     private String defaultGoal(AnalysisMode mode) {
-        return switch(mode) {
-            case LEARNING -> "整理为学习笔记，覆盖核心概念、例子与易错点";
-            case REVIEW -> "整理为评审纪要，覆盖观点、结论、待办与风险";
-            case CREATION -> "提炼可用于二次创作的金句、钩子和内容结构";
-            case GENERAL -> "总结核心内容，给出关键结论及对应的时间戳证据";
-        };
+        // 默认目标来自模式配置，外置模式也能有自己的默认目标
+        String goal = mode.defaultGoal();
+        return goal == null || goal.isBlank() ? "总结核心内容，给出关键结论及对应的时间戳证据" : goal;
     }
 }

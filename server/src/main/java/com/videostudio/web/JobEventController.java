@@ -52,11 +52,13 @@ public class JobEventController {
     private final VectorStore vectors;
     private final JobEventBus eventBus;
     private final RedisSupport redis;
+    private final com.videostudio.agent.ModeRegistry modeRegistry;
 
     public JobEventController(JobRepository jobRepository, JobEventRepository eventRepository,
                               AiProperties ai, RealtimeProperties realtime,
                               MediaObjects objects, VectorStore vectors,
-                              JobEventBus eventBus, RedisSupport redis) {
+                              JobEventBus eventBus, RedisSupport redis,
+                              com.videostudio.agent.ModeRegistry modeRegistry) {
         this.jobRepository = jobRepository;
         this.eventRepository = eventRepository;
         this.ai = ai;
@@ -65,6 +67,7 @@ public class JobEventController {
         this.vectors = vectors;
         this.eventBus = eventBus;
         this.redis = redis;
+        this.modeRegistry = modeRegistry;
     }
 
     @GetMapping("/{id}/stream")
@@ -191,6 +194,8 @@ public class JobEventController {
         info.put("vectorStoreEnabled", vectors.enabled());
         info.put("redisEnabled", redis.available());
         info.put("status", JobStatus.values().length);
+        // 模式清单同样来自注册表：前端据此渲染下拉框，新增模式不必改前端
+        info.put("modes", modeRegistry.describe());
         return ApiResponse.success(info);
     }
 }

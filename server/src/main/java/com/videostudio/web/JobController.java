@@ -40,11 +40,13 @@ public class JobController {
     private final CleanupService cleanupService;
     private final RateLimiter limiter;
     private final RateLimitProperties rateLimits;
+    private final com.videostudio.agent.ModeRegistry modeRegistry;
 
     public JobController(JobService jobService, JobRepository jobRepository, JobEventRepository eventRepository,
                          ReportRepository reportRepository, TranscriptRepository transcriptRepository,
                          VisualRepository visualRepository, CleanupService cleanupService,
-                         RateLimiter limiter, RateLimitProperties rateLimits) {
+                         RateLimiter limiter, RateLimitProperties rateLimits,
+                         com.videostudio.agent.ModeRegistry modeRegistry) {
         this.cleanupService = cleanupService;
         this.jobService = jobService;
         this.jobRepository = jobRepository;
@@ -54,6 +56,7 @@ public class JobController {
         this.visualRepository = visualRepository;
         this.limiter = limiter;
         this.rateLimits = rateLimits;
+        this.modeRegistry = modeRegistry;
     }
 
     public record SubmitRequest(long assetId, String goal, String mode, String title) {
@@ -75,21 +78,16 @@ public class JobController {
 
     /**
      * 模式解析：空值或 AUTO 返回 null，交给 {@link com.videostudio.service.ModeRouter} 判定；
-     * 其余按枚举名严格匹配，非法值直接报错而不是静默变成「通用理解」。
+     * 其余按注册表里的 code 严格匹配，非法值直接报错而不是静默变成「通用理解」。
      */
-    private static AnalysisMode parseMode(String raw) {
+    private AnalysisMode parseMode(String raw) {
         if (raw == null || raw.isBlank() || "AUTO".equalsIgnoreCase(raw.strip())) {
             return null;
         }
-        String value = raw.strip().toUpperCase();
-        for (AnalysisMode mode : AnalysisMode.values()) {
-            if (mode.name().equals(value)) {
-                return mode;
-            }
-        }
-        // AnalysisMode.of() 会把非法值静默吞成 GENERAL，这里必须显式报错，
-        // 否则客户端拼错模式名时会得到一份「看起来正常」但其实用错模板的报告
-        throw new ApiException("不支持的分析模式: " + raw);
+        // 必须显式报错：静默回退成 GENERAL 会让客户端拼错模式名时得到一份
+        // 「看起来正常」但其实用错模板的报告
+        return modeRegistry.find(raw)
+                .orElseThrow(() -> new ApiException("不支持的分析模式: " + raw));
     }
 
     @GetMapping

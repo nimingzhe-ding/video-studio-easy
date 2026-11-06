@@ -19,7 +19,7 @@ public class ReportRepository {
             rs.getLong("job_id"),
             rs.getLong("asset_id"),
             rs.getString("title"),
-            AnalysisMode.of(rs.getString("mode")),
+            AnalysisMode.ofCode(rs.getString("mode")),
             rs.getString("markdown"),
             rs.getString("outline_json"),
             rs.getString("trace_json"),
@@ -39,7 +39,7 @@ public class ReportRepository {
                                              docx_path, created_at)
                 VALUES (?,?,?,?,?,?,?,?,?)
                 """,
-                report.jobId(), report.assetId(), report.title(), report.mode().name(), report.markdown(),
+                report.jobId(), report.assetId(), report.title(), report.mode().code(), report.markdown(),
                 report.outlineJson(), report.traceJson(), report.docxPath(), Sql.now());
     }
 

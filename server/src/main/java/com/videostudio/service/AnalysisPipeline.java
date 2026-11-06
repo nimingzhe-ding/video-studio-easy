@@ -237,7 +237,7 @@ public class AnalysisPipeline {
         Path source = objects.ensureSource(asset.id(),asset.name(),storage.sourceFile(asset.id(),asset.name()));
         Run run = new Run(job, asset, source);
         java.time.Instant started = java.time.Instant.now();
-        metrics.jobStarted(job.mode().name());
+        metrics.jobStarted(job.mode().code());
         // 把 jobId 绑到线程上：模型网关记账、日志 MDC 都靠它，省去逐层传参
         budget.begin(jobId);
         budget.enter(jobId);
@@ -264,7 +264,7 @@ public class AnalysisPipeline {
                 metrics.stage(run.current.name().toLowerCase(java.util.Locale.ROOT),
                         java.time.Duration.between(run.stageStarted, java.time.Instant.now()));
             }
-            metrics.jobFinished(job.mode().name(), status, java.time.Duration.between(started, java.time.Instant.now()));
+            metrics.jobFinished(job.mode().code(), status, java.time.Duration.between(started, java.time.Instant.now()));
             org.slf4j.MDC.remove("jobId");
             budget.leave();
             budget.end(jobId);
@@ -446,7 +446,7 @@ public class AnalysisPipeline {
         }
         trace.put("rounds", outcome.rounds());
         trace.put("verified", verified);
-        trace.put("mode", outcome.mode().name());
+        trace.put("mode", outcome.mode().code());
         if (!Texts.isBlank(job.modeSource())) {
             trace.put("modeSource", job.modeSource());
         }
