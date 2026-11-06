@@ -9,6 +9,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.util.List;
 import java.util.Map;
@@ -38,16 +39,19 @@ public class StaleJobReaper {
     private final RedissonClient redis;
     private final JobRepository jobs;
     private final JobMetrics metrics;
+    private final TransactionTemplate transactions;
     private final long staleMinutes;
     private final int maxAutomaticRequeue;
 
     public StaleJobReaper(JdbcTemplate jdbc, RedissonClient redis, JobRepository jobs, JobMetrics metrics,
+                          TransactionTemplate transactions,
                           @Value("${worker.stale-minutes:15}") long staleMinutes,
                           @Value("${worker.max-automatic-requeue:3}") int maxAutomaticRequeue) {
         this.jdbc = jdbc;
         this.redis = redis;
         this.jobs = jobs;
         this.metrics = metrics;
+        this.transactions = transactions;
         this.staleMinutes = staleMinutes;
         this.maxAutomaticRequeue = maxAutomaticRequeue;
     }
@@ -103,20 +107,28 @@ public class StaleJobReaper {
             }
             return;
         }
-        int updated = jdbc.update("""
-                UPDATE analysis_job SET status = 'PENDING', updated_at = NOW(3), error = NULL, finished_at = NULL,
-                                       generation = generation + 1
-                WHERE id = ? AND status = 'RUNNING' AND generation = ?
-                  AND updated_at < TIMESTAMPADD(MINUTE, ?, NOW(3))
-                """, id, generation, -staleMinutes);
-        if (updated != 1) {
-            return; // 期间被别的实例处理了，或者任务刚好自己跑完
+        // 「改状态」和「写发件箱」必须在同一个事务里：只改状态不写发件箱，任务会永远停在
+        // PENDING 却没有任何消息来驱动它（OutboxDispatcher 只扫 job_outbox，没有别的补偿路径）。
+        Boolean requeued = transactions.execute(status -> {
+            int updated = jdbc.update("""
+                    UPDATE analysis_job SET status = 'PENDING', updated_at = NOW(3), error = NULL, finished_at = NULL,
+                                           generation = generation + 1
+                    WHERE id = ? AND status = 'RUNNING' AND generation = ?
+                      AND updated_at < TIMESTAMPADD(MINUTE, ?, NOW(3))
+                    """, id, generation, -staleMinutes);
+            if (updated != 1) {
+                return false; // 期间被别的实例处理了，或者任务刚好自己跑完
+            }
+            jdbc.update("""
+                    INSERT INTO job_outbox (job_id, generation, status, next_attempt_at, created_at)
+                    SELECT id, generation, 'PENDING', NOW(3), NOW(3) FROM analysis_job WHERE id = ?
+                    """, id);
+            jobs.addNotice(id, "执行该任务的实例已失联，已自动重新排队并从断点继续");
+            return true;
+        });
+        if (!Boolean.TRUE.equals(requeued)) {
+            return;
         }
-        jdbc.update("""
-                INSERT INTO job_outbox (job_id, generation, status, next_attempt_at, created_at)
-                SELECT id, generation, 'PENDING', NOW(3), NOW(3) FROM analysis_job WHERE id = ?
-                """, id);
-        jobs.addNotice(id, "执行该任务的实例已失联，已自动重新排队并从断点继续");
         metrics.jobRequeued("stale");
         log.warn("任务 {} 的执行者在 {} 分钟内没有心跳，已重新排队", id, staleMinutes);
     }

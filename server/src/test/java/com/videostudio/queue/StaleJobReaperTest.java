@@ -6,6 +6,8 @@ import org.junit.jupiter.api.Test;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.transaction.support.TransactionCallback;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.util.List;
 import java.util.Map;
@@ -30,13 +32,25 @@ class StaleJobReaperTest {
     private final JobRepository jobs = mock(JobRepository.class);
     private final JobMetrics metrics = mock(JobMetrics.class);
 
+    /** 直接在调用线程里跑回调，用来看业务分支而不引入真数据库 */
+    @SuppressWarnings("unchecked")
+    private final TransactionTemplate transactions = transactions();
+
+    @SuppressWarnings("unchecked")
+    private static TransactionTemplate transactions() {
+        TransactionTemplate template = mock(TransactionTemplate.class);
+        when(template.execute(any())).thenAnswer(invocation ->
+                ((TransactionCallback<Object>) invocation.getArgument(0)).doInTransaction(null));
+        return template;
+    }
+
     @Test
     void workerStillHoldingTheLockIsNeverTouched() throws InterruptedException {
         staleRow(9L, 1);
         RLock busy = lock(false);
         when(redis.getLock("worker:job:9")).thenReturn(busy);
 
-        new StaleJobReaper(jdbc, redis, jobs, metrics, 15, 3).reclaim();
+        new StaleJobReaper(jdbc, redis, jobs, metrics, transactions, 15, 3).reclaim();
 
         verify(jdbc, never()).update(contains("SET status = 'PENDING'"), any(), any(), any());
         verify(metrics, never()).jobRequeued(anyString());
@@ -49,7 +63,7 @@ class StaleJobReaperTest {
         when(redis.getLock("worker:job:9")).thenReturn(free);
         when(jdbc.update(contains("SET status = 'PENDING'"), any(), any(), any())).thenReturn(1);
 
-        new StaleJobReaper(jdbc, redis, jobs, metrics, 15, 3).reclaim();
+        new StaleJobReaper(jdbc, redis, jobs, metrics, transactions, 15, 3).reclaim();
 
         // 重新排队后必须补一条新的发件箱记录，否则任务会回到「永远没人消费」的状态
         verify(jdbc).update(contains("INSERT INTO job_outbox"), eq(9L));
@@ -67,7 +81,7 @@ class StaleJobReaperTest {
         when(redis.getLock("worker:job:9")).thenReturn(free);
         when(jdbc.update(contains("SET status = 'FAILED'"), any(), any(), any())).thenReturn(1);
 
-        new StaleJobReaper(jdbc, redis, jobs, metrics, 15, 3).reclaim();
+        new StaleJobReaper(jdbc, redis, jobs, metrics, transactions, 15, 3).reclaim();
 
         verify(jdbc, never()).update(contains("INSERT INTO job_outbox"), any(Object[].class));
         verify(metrics).jobRequeued("gave_up");
