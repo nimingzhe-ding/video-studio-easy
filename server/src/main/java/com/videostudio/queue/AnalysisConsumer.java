@@ -93,4 +93,5 @@ public class AnalysisConsumer implements RocketMQListener<MessageExt> {
             throw new IllegalStateException("消费者正在关闭",ex);
         } finally { if(acquired && lock.isHeldByCurrentThread()) lock.unlock(); }
     }
+
 }

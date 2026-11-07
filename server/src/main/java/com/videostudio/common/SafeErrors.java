@@ -18,6 +18,7 @@ public final class SafeErrors {
 
     public static String redact(String text) {
         if (text == null) return "";
+        text = Secrets.scrub(text);
         String safe = AUTH.matcher(text).replaceAll("$1 " + MASK);
         safe = VALUE.matcher(safe).replaceAll("$1" + MASK);
         safe = KEY.matcher(safe).replaceAll(MASK);

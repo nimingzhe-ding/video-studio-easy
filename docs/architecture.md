@@ -55,7 +55,7 @@ MySQL 管理业务与发件箱；Redis 管理会话、锁、限流和累计配�
 
 异常消息必须先审计后确认：消息体严格校验单个 JSON 对象、重复键、ID 类型与范围，最大 64 KiB。无法解析或缺失有效任务代次的消息以 INVALID_MESSAGE 写入 failed_delivery，job_id / generation 使用 0 占位，只保存消息标识、固定错误说明和 payload_sha256，拒绝重投成任务。管理员排查发送方后可以标记 resolved_at / resolved_by；审计库不可用时抛错交回 Broker 重试。
 
-诊断信息在截断前脱敏：任务错误、告警、事件和 API 错误屏蔽 Bearer / Basic、常见 Key / token / password 字段、sk- 格式 Key、URL 用户凭证和签名查询参数。任务与事件读取时也屏蔽历史诊断文本；控制台 Logback 编码器同时屏蔽格式化消息、原因链及 suppressed 异常，并保留堆栈。业务原文与报告正文不做通用文本替换；已存文件不自动重写。
+诊断信息在截断前脱敏，统一入口 SafeErrors 复用远端 Secrets 的厂商前缀、签名参数等规则，再覆盖完整认证与引用值：任务错误、告警、事件和 API 错误屏蔽 Bearer / Basic、常见 Key / token / password 字段、sk- 格式 Key、URL 用户凭证和签名查询参数。任务与事件读取时也屏蔽历史诊断文本；控制台 Logback 编码器同时屏蔽格式化消息、原因链及 suppressed 异常，并保留堆栈。业务原文与报告正文不做通用文本替换；已存文件不自动重写。
 
 Flyway 独占数据库结构迁移。Readiness 检查 MySQL、Redis、对象存储和 Qdrant。Prometheus 指标端点需要管理员身份；正式监控接入应通过私有网关或独立受保护的抓取入口。
 

@@ -228,6 +228,16 @@ public class AnalysisPipeline {
             jobRepository.addNotice(jobId, message);
             emit(current, JobEvent.TYPE_WARNING, "warn", 0, message);
         }
+
+        /**
+         * 把异常压成一条可展示的告警。
+         * <p>告警会写进 notices 并推给前端，来源是外部服务返回的文本，
+         * 必须和失败路径一样先脱敏再截断。
+         */
+        void warn(String message, Throwable cause) {
+            String detail = cause.getMessage() == null ? cause.toString() : cause.getMessage();
+            warn(message + "：" + com.videostudio.common.SafeErrors.message(detail, 200));
+        }
     }
 
     public void run(long jobId) {
@@ -408,8 +418,7 @@ public class AnalysisPipeline {
                 throw ex;
             } catch (RuntimeException ex) {
                 run.degraded = true;
-                run.emit(JobStage.CHUNK, JobEvent.TYPE_WARNING, "warn", JobStage.CHUNK.floor(),
-                        "向量索引写入失败，将优先尝试已有向量并标明检索状态：%s".formatted(ex.getMessage()));
+                run.warn("向量索引写入失败，将优先尝试已有向量并标明检索状态",ex);
             }
         }
 

@@ -34,6 +34,13 @@ class SafeErrorsTest {
         assertTrue(safe.length()<=42);
         assertEquals("HTTP 503 服务暂不可用",SafeErrors.message("HTTP 503\n服务暂不可用",100));
     }
+    @Test void retainsUpstreamVendorAndQuerySecretProtection() {
+        String safe=SafeErrors.redact("AWS AKIAIOSFODNN7EXAMPLE secret=upstream-secret-123 https://host/path?key=query-secret-456&sig=query-signature-789");
+        assertFalse(safe.contains("AKIAIOSFODNN7EXAMPLE"));
+        assertFalse(safe.contains("upstream-secret-123"));
+        assertFalse(safe.contains("query-secret-456"));
+        assertFalse(safe.contains("query-signature-789"));
+    }
     @Test void apiExceptionsNeverReturnCredentialsToClients() {
         var response=new ApiExceptionHandler().handle(new ApiException(502,"Bearer secret-value-123"));
         assertEquals(502,response.getStatusCode().value());

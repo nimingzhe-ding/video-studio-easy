@@ -111,6 +111,11 @@ public class JobRepository {
                 degraded, id) == 1;
     }
 
+    /**
+     * 记录失败原因。
+     * <p>在仓储层再脱敏一次是纵深防御：这个字段会通过接口与 SSE 直接展示给用户，
+     * 而调用方可能不止流水线一家（消费者、管理端都可能写）。漏掉任何一处都是凭证泄露。
+     */
     public void markFailed(long id, String error) {
         jdbc.update("""
                 UPDATE analysis_job SET status = ?, stage = ?, error = ?, updated_at = ?, finished_at = ?
@@ -118,6 +123,7 @@ public class JobRepository {
                 """, JobStatus.FAILED.name(), JobStage.FAILED.name(), com.videostudio.common.SafeErrors.message(error, 300), Sql.now(), Sql.now(), id);
     }
 
+    /** 追加一条提示；同样在入库前脱敏，理由见 {@link #markFailed} */
     public void addNotice(long id, String notice) {
         if (notice == null || notice.isBlank()) {
             return;
