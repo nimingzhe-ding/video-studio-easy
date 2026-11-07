@@ -28,7 +28,13 @@ public class AnalysisConsumer implements RocketMQListener<MessageExt> {
         var payload=Json.tree(new String(message.getBody(),StandardCharsets.UTF_8));
         long id=payload.path("jobId").asLong();
         int generation=payload.path("generation").asInt();
-        if(id<=0 || generation<=0) throw new IllegalArgumentException("无效的任务消息");
+        if(id<=0 || generation<=0) {
+            // 毒消息：这条投递不指向任何任务，既不会让任务失败，也不会被任何重试路径接走。
+            // 必须显式落库，否则运维只能从 Broker 的日志里知道「有消息被丢掉了」。
+            // 重投没有意义——原样再投一次还是非法消息，所以这里直接确认、只留记录。
+            recordInvalidMessage(message, id, generation);
+            return;
+        }
         var lock=redis.getLock("worker:job:"+id);
         boolean acquired=false;
         try {
@@ -48,7 +54,8 @@ public class AnalysisConsumer implements RocketMQListener<MessageExt> {
             try {
                 pipeline.run(id);
             } catch(RuntimeException ex) {
-                jobs.markFailed(id, com.videostudio.common.Texts.oneLine(ex.getMessage(),300));
+                // 脱敏在截断之前：这段文本会入库并通过接口展示给用户
+                jobs.markFailed(id, com.videostudio.common.Secrets.scrubOneLine(ex.getMessage(),300));
                 if(jobs.find(id).map(j -> j.status()==JobStatus.CANCELED).orElse(true)) return;
                 if(message.getReconsumeTimes()>=3) {
                     jdbc.update("INSERT IGNORE INTO failed_delivery(job_id,generation,message_id,reason,created_at) VALUES (?,?,?,?,NOW(3))",
@@ -60,5 +67,30 @@ public class AnalysisConsumer implements RocketMQListener<MessageExt> {
             Thread.currentThread().interrupt();
             throw new IllegalStateException("消费者正在关闭",ex);
         } finally { if(acquired && lock.isHeldByCurrentThread()) lock.unlock(); }
+    }
+
+    /**
+     * 把无法解析的任务消息记进 failed_delivery。
+     *
+     * <p>job_id 用 0 占位：这条记录不属于任何任务，但表要求非空。
+     * 正文只留前 200 字并脱敏——消息体可能带着上游塞进来的凭证。
+     * 写库失败不抛错：记不了账也不该让消费线程反复重试同一条毒消息。
+     */
+    private void recordInvalidMessage(MessageExt message, long jobId, int generation) {
+        try {
+            String body = com.videostudio.common.Secrets.scrubOneLine(
+                    new String(message.getBody(), StandardCharsets.UTF_8), 200);
+            jdbc.update("""
+                    INSERT IGNORE INTO failed_delivery(job_id,generation,message_id,reason,created_at)
+                    VALUES (?,?,?,?,NOW(3))
+                    """, Math.max(0, jobId), Math.max(0, generation), message.getMsgId(),
+                    "无效的任务消息（jobId/generation 非法），内容：" + body);
+            org.slf4j.LoggerFactory.getLogger(getClass())
+                    .warn("收到无效的任务消息 msgId={} jobId={} generation={}，已记录待人工处理",
+                            message.getMsgId(), jobId, generation);
+        } catch (RuntimeException ex) {
+            org.slf4j.LoggerFactory.getLogger(getClass())
+                    .error("记录无效任务消息失败 msgId={}", message.getMsgId(), ex);
+        }
     }
 }

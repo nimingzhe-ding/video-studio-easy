@@ -32,6 +32,40 @@ class AnalysisConsumerTest {
         assertDoesNotThrow(()->new AnalysisConsumer(jobs,pipeline,mock(JdbcTemplate.class),redis).onMessage(message));
         verifyNoInteractions(pipeline);
     }
+    /**
+     * 毒消息：jobId 非法时既不指向任何任务，也不会被任何重试路径接走。
+     * 必须落库，否则运维只能从 Broker 日志里知道有消息被丢掉了。
+     */
+    @Test void invalidMessageIsRecordedInsteadOfSilentlyThrown() throws Exception {
+        var jobs = mock(JobRepository.class); var pipeline = mock(AnalysisPipeline.class);
+        var jdbc = mock(JdbcTemplate.class); var redis = mock(RedissonClient.class);
+        var message = new MessageExt(); message.setMsgId("poison-1");
+        message.setBody("{\"jobId\":0,\"generation\":0}".getBytes(StandardCharsets.UTF_8));
+
+        // 直接确认，不抛错：原样重投还是非法消息，重试只会把这条毒消息再走一遍
+        assertDoesNotThrow(() -> new AnalysisConsumer(jobs, pipeline, jdbc, redis).onMessage(message));
+
+        verifyNoInteractions(pipeline);
+        verify(jdbc).update(contains("failed_delivery"), eq(0L), eq(0), eq("poison-1"),
+                contains("无效的任务消息"));
+    }
+
+    /** 消息体可能带上游塞进来的凭证，落库前必须抹掉 */
+    @Test void invalidMessageBodyIsScrubbedBeforeRecording() throws Exception {
+        var jobs = mock(JobRepository.class); var pipeline = mock(AnalysisPipeline.class);
+        var jdbc = mock(JdbcTemplate.class); var redis = mock(RedissonClient.class);
+        var message = new MessageExt(); message.setMsgId("poison-2");
+        message.setBody(("{\"jobId\":-1,\"note\":\"Authorization: Bearer sk-abcdefghijklmnopqrstuvwxyz\"}")
+                .getBytes(StandardCharsets.UTF_8));
+
+        new AnalysisConsumer(jobs, pipeline, jdbc, redis).onMessage(message);
+
+        var captor = org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(jdbc).update(contains("failed_delivery"), any(), any(), eq("poison-2"), captor.capture());
+        assertFalse(captor.getValue().contains("sk-abcdefghijklmnopqrstuvwxyz"),
+                "消息体里的凭证不能原样进 failed_delivery");
+    }
+
     @Test void exhaustedFailureIsRecordedAndStillThrownForBrokerDeadLetter() throws Exception {
         var jobs=mock(JobRepository.class); var pipeline=mock(AnalysisPipeline.class); var jdbc=mock(JdbcTemplate.class);
         var redis=mock(RedissonClient.class); var lock=mock(RLock.class);

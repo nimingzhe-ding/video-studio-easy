@@ -6,6 +6,7 @@ import com.videostudio.agent.EvidenceValidator;
 import com.videostudio.agent.ReportComposer;
 import com.videostudio.asr.TranscriptionService;
 import com.videostudio.common.Json;
+import com.videostudio.common.Secrets;
 import com.videostudio.common.Texts;
 import com.videostudio.common.Times;
 import com.videostudio.config.AgentProperties;
@@ -227,6 +228,16 @@ public class AnalysisPipeline {
             jobRepository.addNotice(jobId, message);
             emit(current, JobEvent.TYPE_WARNING, "warn", 0, message);
         }
+
+        /**
+         * 把异常压成一条可展示的告警。
+         * <p>告警会写进 notices 并推给前端，来源是外部服务返回的文本，
+         * 必须和失败路径一样先脱敏再截断。
+         */
+        void warn(String message, Throwable cause) {
+            String detail = cause.getMessage() == null ? cause.toString() : cause.getMessage();
+            warn(message + "：" + Secrets.scrubOneLine(detail, 200));
+        }
     }
 
     public void run(long jobId) {
@@ -254,7 +265,9 @@ public class AnalysisPipeline {
             status = "succeeded";
         } catch (Exception e) {
             log.error("任务 {} 失败", jobId, e);
-            String message = Texts.oneLine(e.getMessage() == null ? e.toString() : e.getMessage(), 300);
+            // 脱敏必须在截断之前：先截断可能把凭证切成半截，正则就匹配不上了。
+            // 这条文本会写进 analysis_job.error，并通过接口与 SSE 推给前端。
+            String message = Secrets.scrubOneLine(e.getMessage() == null ? e.toString() : e.getMessage(), 300);
             jobRepository.markFailed(jobId, message);
             run.emit(JobStage.FAILED, JobEvent.TYPE_ERROR, "error", 100, "分析失败：" + message);
             throw new IllegalStateException(message,e);
@@ -406,8 +419,8 @@ public class AnalysisPipeline {
                         "向量索引 %s：%d/%d 个分块".formatted(vectors.provider(), withVector, chunks.size()));
             } catch (RuntimeException ex) {
                 run.degraded = true;
-                run.emit(JobStage.CHUNK, JobEvent.TYPE_WARNING, "warn", JobStage.CHUNK.floor(),
-                        "向量索引失败，本次检索退化为关键词匹配：%s".formatted(ex.getMessage()));
+                // 走 warn 而不是直接拼 ex.getMessage()：Qdrant 的报错可能回显带 key 的 URL
+                run.warn("向量索引失败，本次检索退化为关键词匹配", ex);
             }
         }
 
