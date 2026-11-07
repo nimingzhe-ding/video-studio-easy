@@ -47,6 +47,8 @@ Compose 里的两个初始化步骤有隐式依赖，改动时不要删掉：
 | S3_ENDPOINT、S3_ACCESS_KEY、S3_SECRET_KEY、S3_BUCKET | 私有对象桶 |
 | QDRANT_URL、QDRANT_API_KEY、QDRANT_COLLECTION | 向量库 |
 | EMBEDDING_DIMENSIONS | 向量维度，必须与模型一致 |
+| RETRIEVAL_FALLBACK_ENABLED | 默认 true；仅 Qdrant 重试耗尽后允许使用已有向量或关键词，设 false 可关闭 |
+| CLEANUP_INTERVAL_MS | 存储清理轮询间隔，默认 5000 毫秒 |
 | AI_API_KEY、AI_BASE_URL、LLM_MODEL | 真实模型接口 |
 | ASR_URL、ASR_MODEL | 云端语音识别 |
 | EMBEDDING_BASE_URL、EMBEDDING_API_KEY、EMBEDDING_MODEL | 向量模型；独立 Key 留空时沿用 AI_API_KEY |
@@ -59,8 +61,8 @@ Compose 里的两个初始化步骤有隐式依赖，改动时不要删掉：
 
 升级前备份旧数据库、原始媒体和报告。新版本不会读取 H2，也不会自动将本地文件当作 S3 已存在的对象。
 
-- 全新部署：Flyway 从 V1 初始表结构开始，随后执行 V2 用户与发件箱迁移。
-- 已有 MySQL：核对表结构与 V1 完全一致后，由运维明确将 Flyway baseline 设为版本 1，再运行 V2。默认不自动 baseline，以免错误接管其他库。
+- 全新部署：Flyway 从 V1 初始表结构开始，随后依次执行 V2 用户与发件箱、V3 失败投递重放标记、V4 存储清理发件箱与 V5 异常消息审计迁移。
+- 已有 MySQL：核对表结构与 V1 完全一致后，由运维明确将 Flyway baseline 设为版本 1，再顺序运行 V2 至 V5。默认不自动 baseline，以免错误接管其他库。
 - 旧 H2：先将数据导出并核对导入 MySQL；不要直接将 H2 文件挂到新容器。
 - 为旧 media_asset 的 owner_id 明确指定归属用户。未归属的数据默认不可访问。
 - 上传原件为 assets/{assetId}/source{扩展名}；关键帧为 assets/{assetId}/frames/job-{jobId}/{文件名}；Word 为 assets/{assetId}/report/report-{jobId}.docx。核对文件大小与抽样下载后再更新数据库中的对象键。
@@ -74,11 +76,19 @@ Compose 里的两个初始化步骤有隐式依赖，改动时不要删掉：
 
 job_outbox 的 PENDING 记录表示尚未获 Broker 确认。投递器按退避间隔持续重试；监控积压数量、最老记录年龄和 attempts。
 
-消费失败由 RocketMQ 重投。三次重试后，failed_delivery 记录任务与消息 ID，Broker 原消息保留在 %DLQ%video-studio-workers。管理员通过 `GET /api/admin/failed-deliveries` 查看待处理记录，用 `POST /api/admin/failed-deliveries/{id}/replay` 重新投递：它递增 generation，与用户重试走同一条状态机，旧代次的消息无法启动新一代任务。同一条记录只能重投一次。
+暂时性消费故障由 RocketMQ 重投。三次重试后，failed_delivery 记录任务与消息 ID，Broker 原消息保留在 %DLQ%video-studio-workers。永久业务错误、模型请求被拒绝与本地预算耗尽直接写 failed_delivery 并确认，台账记录不一定对应 Broker 死信。管理员通过 `GET /api/admin/failed-deliveries` 查看待处理记录，用 `POST /api/admin/failed-deliveries/{id}/replay` 重新投递：它递增 generation，与用户重试走同一条状态机，旧代次的消息无法启动新一代任务。同一条记录只能重投一次。
 
 重投不检查当日模型额度——死信恰恰要在额度耗尽、需要恢复的时候清理。先修复模型、存储或配置，再重投。
 
 不要直接删除死信或将全部失败消息无差别重放。重复外部模型请求仍可能产生费用。
+
+### 异常消息审计
+
+V5 为 failed_delivery 增加 failure_kind、payload_sha256 与处理审计字段。INVALID_MESSAGE 表示格式、字段类型或大小不符合队列协议；job_id / generation 的 0 是占位值，不能重投成任务。原文不落库，使用 message_id 和摘要对照发送方排查。入账成功后已确认，不能假设 Broker 还有死信副本。
+
+管理页将异常消息单独标识，提供“标记已处理”；对应 `POST /api/admin/failed-deliveries/{id}/resolve`，保留记录并写入操作者与时间。查历史时使用 `pendingOnly=false`。普通任务失败仍走“重投”。写接口必须具备管理员权限和 CSRF。
+
+控制台日志默认使用脱敏编码器，同时处理消息和异常堆栈。如果替换 logback-spring.xml 或额外接入日志 appender，应保留同样的脱敏编码；不要改回直接输出 `%msg` / `%ex`。
 
 ### 执行者失联后的自愈
 
@@ -89,14 +99,22 @@ job_outbox 的 PENDING 记录表示尚未获 Broker 确认。投递器按退避�
 
 回收动作是重新排队并递增 generation，任务会从断点继续，不会重跑已完成的转写与抽帧。自动回收次数上限由 worker.max-automatic-requeue（默认 3）控制，超过后任务置为 FAILED 并写明原因，交给人工判断，避免「一跑就崩」的任务反复烧钱。把 worker.stale-minutes 设为 0 可关闭自动回收，适用于锁不可靠、需要人工介入的环境。
 
+### 异步存储清理
+
+升级时 Flyway 自动创建 V4 的 `storage_cleanup`，无需手工建表。删除 API 提交后元数据立即不可见，二进制对象与索引由后台最终清除；不要以 API 成功返回作为物理擦除已经完成的证明。清理失败不会恢复已删除的业务记录，PENDING 项会持续退避重试；进程重启后继续处理。
+
+排查清理积压时查询 `status='PENDING'` 的数量、最早 `created_at`、`attempts` 与 `last_error`，核对 S3 / Qdrant 连通性与删除权限。修复后等待自动重试。DONE 记录可在备份后按保留策略归档。
+
 ### 指标
 
 | 指标 | 用途 |
 | --- | --- |
 | videostudio_outbox_pending | 未被 Broker 确认的发件箱记录数 |
 | videostudio_outbox_oldest_age_seconds | 最老未投递记录年龄，区分瞬时抖动与链路中断 |
-| videostudio_failed_delivery_total | 重试耗尽后写入死信记录的任务数 |
+| videostudio_failed_delivery_total | 失败投递台账记录数，含永久失败、重试耗尽和异常消息 |
+| videostudio_retrieval_fallback_total | 检索降级次数，mode=saved-vectors / keywords |
 | videostudio_jobs_requeued_total | 重新排队的任务数，tag reason=stale / gave_up |
+| videostudio_invalid_messages_pending | 尚未标记处理的异常队列消息数 |
 | videostudio_jobs_active | 当前排队与运行中的任务数 |
 
 /actuator/health/liveness 用于进程存活，/actuator/health/readiness 用于依赖就绪。/actuator/prometheus 仅管理员可访问。监控应覆盖队列积压、失败率、S3 写入失败、Qdrant 错误、模型延迟和日 token 用量。

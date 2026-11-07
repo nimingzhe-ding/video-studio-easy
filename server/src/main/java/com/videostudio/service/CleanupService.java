@@ -4,7 +4,6 @@ import com.videostudio.common.ApiException;
 import com.videostudio.domain.AnalysisJob;
 import com.videostudio.domain.MediaAsset;
 import com.videostudio.media.Storage;
-import com.videostudio.retrieval.VectorStore;
 import com.videostudio.repository.ChatRepository;
 import com.videostudio.repository.ChunkRepository;
 import com.videostudio.repository.JobEventRepository;
@@ -13,7 +12,6 @@ import com.videostudio.repository.MediaRepository;
 import com.videostudio.repository.ReportRepository;
 import com.videostudio.repository.TranscriptRepository;
 import com.videostudio.repository.VisualRepository;
-import com.videostudio.storage.MediaObjects;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -45,21 +43,21 @@ public class CleanupService {
     private final ChatRepository chatRepository;
     private final JobService jobService;
     private final Storage storage;
-    private final MediaObjects objects;
-    private final VectorStore vectors;
     private final org.redisson.api.RedissonClient locks;
     private final org.springframework.transaction.support.TransactionTemplate transactions;
     private final org.springframework.jdbc.core.JdbcTemplate jdbc;
     private final com.videostudio.infra.JobOwners owners;
+    private final com.videostudio.storage.CleanupOutbox cleanup;
 
     public CleanupService(MediaRepository mediaRepository, JobRepository jobRepository,
                           JobEventRepository eventRepository, TranscriptRepository transcriptRepository,
                           VisualRepository visualRepository, ChunkRepository chunkRepository,
                           ReportRepository reportRepository, ChatRepository chatRepository,
                           JobService jobService, Storage storage,
-                          MediaObjects objects, VectorStore vectors, org.redisson.api.RedissonClient locks,
+                          org.redisson.api.RedissonClient locks,
                           org.springframework.transaction.support.TransactionTemplate transactions,
-                          org.springframework.jdbc.core.JdbcTemplate jdbc, com.videostudio.infra.JobOwners owners) {
+                          org.springframework.jdbc.core.JdbcTemplate jdbc, com.videostudio.infra.JobOwners owners, com.videostudio.storage.CleanupOutbox cleanup) {
+        this.cleanup=cleanup;
         this.locks=locks; this.transactions=transactions; this.jdbc=jdbc; this.owners=owners;
         this.mediaRepository = mediaRepository;
         this.jobRepository = jobRepository;
@@ -71,8 +69,6 @@ public class CleanupService {
         this.chatRepository = chatRepository;
         this.jobService = jobService;
         this.storage = storage;
-        this.objects = objects;
-        this.vectors = vectors;
     }
 
     /** 删除单个任务：运行中的先取消，再清证据与磁盘目录 */
@@ -85,8 +81,7 @@ public class CleanupService {
         if (job.status().running()) {
             jobService.cancel(jobId);
         }
-        objects.deleteJob(job.assetId(),jobId);
-        vectors.deleteJob(jobId);
+        cleanup.job(job.assetId(),jobId);
         purgeJobRows(jobId);
         deleteQuietly(storage.mediaDir(job.assetId()).resolve("frames").resolve("job-" + jobId));
         deleteQuietly(storage.mediaDir(job.assetId()).resolve("asr").resolve("job-" + jobId));
@@ -114,8 +109,7 @@ public class CleanupService {
     private void deleteMediaLocked(long assetId) {
         MediaAsset asset = mediaRepository.find(assetId)
                 .orElseThrow(() -> ApiException.notFound("媒体不存在: " + assetId));
-        objects.deleteAsset(assetId);
-        vectors.deleteAsset(assetId);
+        cleanup.asset(assetId);
         List<Long> jobIds = jobRepository.idsByAsset(assetId);
         for (Long jobId : jobIds) {
             AnalysisJob job = jobRepository.find(jobId).orElse(null);
@@ -153,6 +147,14 @@ public class CleanupService {
 
     /** 目录删除失败只记日志：库里记录已清掉，残留文件不该阻塞用户操作 */
     private void deleteQuietly(Path path) {
+        if(org.springframework.transaction.support.TransactionSynchronizationManager.isSynchronizationActive()) {
+            org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
+                new org.springframework.transaction.support.TransactionSynchronization() {
+                    @Override public void afterCommit() { deleteWorkCopy(path); }
+                });
+        } else deleteWorkCopy(path);
+    }
+    private void deleteWorkCopy(Path path) {
         if (path == null || !Files.exists(path)) {
             return;
         }

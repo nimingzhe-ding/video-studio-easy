@@ -62,7 +62,7 @@ public class QdrantVectorStore implements VectorStore {
     private Map<String,Object> filter(String field,long value) { return Map.of("must",List.of(Map.of("key",field,"match",Map.of("value",value)))); }
     private void validate(List<Double> vector) {
         if(vector==null || vector.size()!=dimensions || vector.stream().anyMatch(v -> v==null || !Double.isFinite(v)))
-            throw new IllegalStateException("向量维度或数值不合法，期望 "+dimensions+" 维");
+            throw new IllegalArgumentException("向量维度或数值不合法，期望 "+dimensions+" 维");
     }
     private String endpoint(String suffix) { return url+"/collections/"+collection+suffix; }
     private JsonNode call(String method,String suffix,Object body) {

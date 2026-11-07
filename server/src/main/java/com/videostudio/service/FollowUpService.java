@@ -134,7 +134,9 @@ public class FollowUpService {
         messages.add(LlmGateway.Message.user(context + "\n\n用户追问：" + question));
 
         LlmGateway.ChatResult result = llm.chat(messages, 0.3, 900, "follow-up");
-        return result == null ? null : result.content();
+        if(result==null) return null;
+        String notice=HybridRetriever.fallbackNotice(hits);
+        return notice.isEmpty()?result.content():"> "+notice+"\n\n"+result.content();
     }
 
     /** 音视频总时长，用于给追问说明「这段话出自多长的素材」 */

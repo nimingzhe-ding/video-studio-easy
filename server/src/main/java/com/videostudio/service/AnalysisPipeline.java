@@ -162,9 +162,9 @@ public class AnalysisPipeline {
          */
         boolean speakerSeparated = false;
         /**
-         * 本次报告是否在证据不完整的情况下产出。
-         * <p>目前只有向量索引会置位：它失败不终止任务（关键词检索仍可用），
-         * 但用户看到报告时应当知道语义召回这一路是缺的。
+         * 本次报告是否经历索引故障或检索降级。
+         * <p>向量索引异常或检索降级会置位：仍使用真实证据完成分析，
+         * 用户与运维应当知道本次使用的检索路径。
          */
         boolean degraded = false;
 
@@ -223,6 +223,7 @@ public class AnalysisPipeline {
         }
 
         void warn(String message) {
+            message = com.videostudio.common.SafeErrors.redact(message);
             warnings.add(message);
             jobRepository.addNotice(jobId, message);
             emit(current, JobEvent.TYPE_WARNING, "warn", 0, message);
@@ -254,7 +255,7 @@ public class AnalysisPipeline {
             status = "succeeded";
         } catch (Exception e) {
             log.error("任务 {} 失败", jobId, e);
-            String message = Texts.oneLine(e.getMessage() == null ? e.toString() : e.getMessage(), 300);
+            String message = com.videostudio.common.SafeErrors.message(e.getMessage() == null ? e.toString() : e.getMessage(), 300);
             jobRepository.markFailed(jobId, message);
             run.emit(JobStage.FAILED, JobEvent.TYPE_ERROR, "error", 100, "分析失败：" + message);
             throw new IllegalStateException(message,e);
@@ -396,18 +397,19 @@ public class AnalysisPipeline {
             run.emit(JobStage.CHUNK, JobEvent.TYPE_METRIC, "info", JobStage.CHUNK.floor(),
                     "生成 %d 个上下文分块".formatted(chunks.size()));
         }
-        // 向量索引失败不让整个任务失败：分块与关键词已经在库里，检索还能靠词项命中出结果，
-        // 只是少了语义召回这一路。写失败要显式告警，而不是静默降级成「看起来正常」。
+        // 已持久化的向量仍可用于受控检索；数据格式错误必须失败，服务故障则显式告警。
         if (vectors.enabled()) {
             long withVector = chunks.stream().filter(c -> !c.embedding().isEmpty()).count();
             try {
                 vectors.index(asset.id(), run.jobId, chunks);
                 run.emit(JobStage.CHUNK, JobEvent.TYPE_LOG, "info", JobStage.CHUNK.floor(),
                         "向量索引 %s：%d/%d 个分块".formatted(vectors.provider(), withVector, chunks.size()));
+            } catch (IllegalArgumentException ex) {
+                throw ex;
             } catch (RuntimeException ex) {
                 run.degraded = true;
                 run.emit(JobStage.CHUNK, JobEvent.TYPE_WARNING, "warn", JobStage.CHUNK.floor(),
-                        "向量索引失败，本次检索退化为关键词匹配：%s".formatted(ex.getMessage()));
+                        "向量索引写入失败，将优先尝试已有向量并标明检索状态：%s".formatted(ex.getMessage()));
             }
         }
 
@@ -416,8 +418,10 @@ public class AnalysisPipeline {
         AnalysisAgent.Request request = new AnalysisAgent.Request(run.jobId, job.focus(), job.mode(),
                 transcripts, visuals, chunks, Times.human(run.durationMs));
         run.stage(JobStage.PLAN, "规划分析提纲");
-        AnalysisAgent.Outcome outcome = agent.run(request, message ->
-                run.emit(JobStage.EXECUTE, JobEvent.TYPE_LOG, "info", JobStage.EXECUTE.floor(), message));
+        AnalysisAgent.Outcome outcome = agent.run(request, message -> {
+            if(message.startsWith("检索降级：")) { run.degraded=true; run.warn(message); }
+            else run.emit(JobStage.EXECUTE, JobEvent.TYPE_LOG,"info",JobStage.EXECUTE.floor(),message);
+        });
         run.emit(JobStage.CRITIC, JobEvent.TYPE_METRIC, "info", JobStage.CRITIC.floor(),
                 "证据校验：" + (outcome.critique().passed() ? "通过" : "存在未通过项")
                         + "（%d 轮）".formatted(outcome.rounds()));
@@ -434,6 +438,11 @@ public class AnalysisPipeline {
                         outcome.rounds(), verified),
                 draft, outcome.critique(), citations);
 
+        if(run.degraded) {
+            String notice=run.warnings.stream().filter(w -> w.startsWith("检索降级：")).distinct()
+                .collect(java.util.stream.Collectors.joining("\n> "));
+            markdown="> "+(notice.isBlank()?"检索服务发生异常，本报告使用可用证据继续分析，结论已通过证据校验。":notice)+"\n\n"+markdown;
+        }
         Path docx = storage.reportDocx(asset.id(), run.jobId);
         List<DocxExporter.Figure> figures = reportFigures(draft, visuals);
         docxExporter.export(markdown,docx,figures);

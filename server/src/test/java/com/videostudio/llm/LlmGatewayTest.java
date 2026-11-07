@@ -17,7 +17,8 @@ class LlmGatewayTest {
         server.createContext("/", e -> { count.incrementAndGet(); e.sendResponseHeaders(401,-1); e.close(); }); server.start();
         try {
             var props=new AiProperties(); props.setApiKey("test-fixture"); props.setBaseUrl("http://127.0.0.1:"+server.getAddress().getPort());
-            assertThrows(ApiException.class,()->new LlmGateway(props).chat(List.of(),0,10,"test"));
+            var failure=assertThrows(ModelRequestRejectedException.class,()->new LlmGateway(props).chat(List.of(),0,10,"test"));
+            assertEquals(502,failure.status());
             assertEquals(1,count.get());
         } finally { server.stop(0); }
     }

@@ -17,10 +17,11 @@
 
 ## 管理员：失败投递
 
-重试耗尽的任务会写入 failed_delivery，原始消息由 Broker 留在死信队列。
+暂时故障重试耗尽后写入 failed_delivery，原始消息由 Broker 留在死信队列。永久业务错误、模型请求被拒绝和本地预算耗尽直接入账后确认；格式错误的消息以 INVALID_MESSAGE 入账后确认，因此台账不一定对应 Broker 死信。
 
-- GET /api/admin/failed-deliveries?pendingOnly=true&limit=50：列出失败投递。默认只返回尚未重投过的记录。
-- POST /api/admin/failed-deliveries/{id}/replay：重新投递该任务。递增 generation 并写发件箱，与用户重试走同一条状态机；同一条记录只能重投一次，重复调用返回 409。
+- GET /api/admin/failed-deliveries?pendingOnly=true&limit=50：列出失败投递。默认只返回尚未重投且尚未标记处理的记录。返回 failureKind（TASK_FAILURE / INVALID_MESSAGE）、payloadSha256、replayable、resolved；异常消息的 jobId / generation 为 0，占位值不关联业务任务。
+- POST /api/admin/failed-deliveries/{id}/replay：重新投递该任务。递增 generation 并写发件箱，与用户重试走同一条状态机；同一条记录只能重投一次，重复调用返回 409。异常消息或已标记处理的记录也返回 409。
+- POST /api/admin/failed-deliveries/{id}/resolve：仅对 INVALID_MESSAGE 标记已处理并记录操作者。重复标记保持幂等，审计记录保留；普通任务失败不能通过该入口隐藏。
 
 重投不检查当日模型额度：死信清理不应该被额度挡住。原消息不重放——它带着旧代次，重放会被消费端忽略。
 

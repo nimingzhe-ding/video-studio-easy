@@ -133,6 +133,8 @@ public class OutboxDispatcher {
             Long failed = jdbc.queryForObject("SELECT COUNT(*) FROM failed_delivery", Long.class);
             metrics.outbox(((Number) row.get("pending")).longValue(), ((Number) row.get("oldest")).longValue(),
                     failed == null ? 0 : failed);
+            Long invalid=jdbc.queryForObject("SELECT COUNT(*) FROM failed_delivery WHERE failure_kind='INVALID_MESSAGE' AND resolved_at IS NULL",Long.class);
+            metrics.invalidMessagesPending(invalid==null?0:invalid);
         } catch (RuntimeException ex) {
             // 指标刷新失败只影响监控，不能反过来打断投递
             log.debug("刷新发件箱指标失败", ex);

@@ -27,9 +27,9 @@ public class JobRepository {
             JobStatus.valueOf(rs.getString("status")),
             JobStage.valueOf(rs.getString("stage")),
             rs.getInt("progress"),
-            rs.getString("error"),
+            com.videostudio.common.SafeErrors.redact(rs.getString("error")),
             rs.getBoolean("degraded"),
-            rs.getString("notices"),
+            com.videostudio.common.SafeErrors.redact(rs.getString("notices")),
             Sql.instant(rs.getTimestamp("created_at")),
             Sql.instant(rs.getTimestamp("updated_at")),
             Sql.instant(rs.getTimestamp("finished_at")));
@@ -100,8 +100,7 @@ public class JobRepository {
     }
 
     /**
-     * @param degraded 本次报告是否在证据不完整的情况下产出（目前只有向量索引用得上：
-     *                 索引失败不会终止任务，但语义召回这一路确实缺失，前端应当能看见）
+     * @param degraded 本次报告是否经历索引异常或受控检索降级，前端应当明确展示。
      */
     public boolean markSucceeded(long id, boolean degraded) {
         return jdbc.update("""
@@ -116,16 +115,17 @@ public class JobRepository {
         jdbc.update("""
                 UPDATE analysis_job SET status = ?, stage = ?, error = ?, updated_at = ?, finished_at = ?
                 WHERE id = ? AND status NOT IN ('CANCELED','SUCCEEDED')
-                """, JobStatus.FAILED.name(), JobStage.FAILED.name(), error, Sql.now(), Sql.now(), id);
+                """, JobStatus.FAILED.name(), JobStage.FAILED.name(), com.videostudio.common.SafeErrors.message(error, 300), Sql.now(), Sql.now(), id);
     }
 
     public void addNotice(long id, String notice) {
         if (notice == null || notice.isBlank()) {
             return;
         }
+        notice = com.videostudio.common.SafeErrors.redact(notice);
         List<String> rows = jdbc.queryForList("SELECT notices FROM analysis_job WHERE id = ?", String.class, id);
         String existing = rows.isEmpty() ? null : rows.get(0);
-        String merged = existing == null || existing.isBlank() ? notice : existing + "\n" + notice;
+        String merged = existing == null || existing.isBlank() ? notice : com.videostudio.common.SafeErrors.redact(existing) + "\n" + notice;
         jdbc.update("UPDATE analysis_job SET notices = ?, updated_at = ? WHERE id = ?",
                 merged, Sql.now(), id);
     }

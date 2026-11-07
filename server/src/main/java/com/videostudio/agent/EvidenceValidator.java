@@ -31,6 +31,11 @@ public final class EvidenceValidator {
         List<String> problems = new ArrayList<>();
         List<Long> failingTimestamps = new ArrayList<>();
 
+        if (draft == null) return new Outcome(false,List.of("没有可校验的报告"),List.of());
+        if (Texts.isBlank(draft.title())) problems.add("报告标题为空");
+        if (draft.conclusions().isEmpty()) problems.add("报告缺少结论");
+        if (draft.evidence().isEmpty()) problems.add("报告缺少证据");
+
         if (!requiredSectionKeys.isEmpty()) {
             List<String> present = draft.sections().stream().map(AgentModels.Section::key).toList();
             for (String key : requiredSectionKeys) {
@@ -43,10 +48,19 @@ public final class EvidenceValidator {
         // 证据级校验
         List<AgentModels.Evidence> supported = new ArrayList<>();
         for (AgentModels.Evidence evidence : draft.evidence()) {
-            String source = evidence.source() == null ? "" : evidence.source().toUpperCase(Locale.ROOT);
-            if (!source.contains("ASR") && !source.contains("OCR") && !source.contains("VISION")) {
+            String source = evidence.source() == null ? "" : evidence.source().strip().toUpperCase(Locale.ROOT);
+            if (!source.matches("(?:ASR|OCR|VISION)(?:\\+(?:ASR|OCR|VISION))*")) {
                 problems.add("证据来源不合法（只能是 ASR / OCR / VISION）：" + source);
                 add(failingTimestamps, evidence.timestampMs());
+                continue;
+            }
+            if (normalize(evidence.content()).isEmpty() || normalize(evidence.claim()).isEmpty()) {
+                problems.add("证据原文或支撑的结论为空");
+                add(failingTimestamps,evidence.timestampMs());
+                continue;
+            }
+            if (evidence.timestampMs()<0) {
+                problems.add("证据时间戳不得为负数");
                 continue;
             }
             TranscriptSegment segment = findSegment(transcripts, evidence.timestampMs());

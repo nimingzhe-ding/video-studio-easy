@@ -209,10 +209,11 @@ export const api = {
   deleteJob: (id) => request(`/api/jobs/${id}`, { method: 'DELETE' }),
   reanalyze: (id, payload) => request(`/api/jobs/${id}/reanalyze`, json(payload)),
 
-  /** 管理端：重试耗尽后落库的失败投递。仅 ADMIN 角色可用 */
+  /** 管理端：失败任务与异常消息审计。仅 ADMIN 角色可用 */
   failedDeliveries: (pendingOnly = true, limit = 50) =>
     request(`/api/admin/failed-deliveries?pendingOnly=${pendingOnly}&limit=${limit}`),
   replayDelivery: (id) => request(`/api/admin/failed-deliveries/${id}/replay`, { method: 'POST' }),
+  resolveDelivery: (id) => request(`/api/admin/failed-deliveries/${id}/resolve`, { method: 'POST' }),
 
   transcript: (id, from = 0, size = 2000) => request(`/api/jobs/${id}/transcript?from=${from}&size=${size}`),
   evidence: (id) => request(`/api/jobs/${id}/evidence`),

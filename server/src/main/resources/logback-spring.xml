@@ -1,0 +1,12 @@
+<configuration>
+    <conversionRule conversionWord="safeMessage" class="com.videostudio.infra.SafeMessageConverter"/>
+    <conversionRule conversionWord="safeException" class="com.videostudio.infra.SafeExceptionConverter"/>
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} %-5level [%X{traceId:-}] [%X{jobId:-}] %logger{36} - %safeMessage%n%safeException</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+    </appender>
+    <root level="INFO"><appender-ref ref="CONSOLE"/></root>
+</configuration>

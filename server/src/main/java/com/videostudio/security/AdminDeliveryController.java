@@ -12,11 +12,10 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.Map;
 
 /**
- * 管理端运维接口：失败投递的查询与重投。
+ * 管理端运维接口：失败任务重投与异常消息处理审计。
  *
  * <p>由 {@link SecurityConfig} 的 {@code /api/admin/** -> hasRole("ADMIN")} 保护。
- * 只提供「看」和「重新排队」两个动作，不提供「删死信」——删除会让 Broker 里的原始消息
- * 变成无人认领的孤儿，重投到处理栈里才是正确的恢复路径。
+ * 异常消息标记已处理后仍保留审计记录；普通失败任务通过递增代次重新排队。
  */
 @RestController
 @RequestMapping("/api/admin/failed-deliveries")
@@ -40,5 +39,11 @@ public class AdminDeliveryController {
     public ApiResponse<Map<String, Object>> replay(@PathVariable long id) {
         long jobId = deliveries.replay(id, current.id());
         return ApiResponse.success(Map.of("replayed", true, "jobId", jobId));
+    }
+
+    @PostMapping("/{id}/resolve")
+    public ApiResponse<?> resolve(@PathVariable long id) {
+        deliveries.resolve(id,current.id());
+        return ApiResponse.success(Map.of("resolved",true));
     }
 }

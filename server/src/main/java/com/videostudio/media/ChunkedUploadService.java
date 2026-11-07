@@ -27,12 +27,11 @@ import java.util.Set;
 /**
  * 分片上传：创建会话 → 逐片上传 → 合并入库 → 断点续传。
  *
- * <p>分片目录在 {@code data/uploads/{uploadId}/}，与正式媒体目录分开；
- * 合并成功后才调用 {@link MediaIngestService#ingestFile} 搬进 {@code data/media/{assetId}/}。
- * 这样即使用户中途放弃，也只是一堆可回收的临时分片，不会在媒体库里留下半截记录。
+ * <p>分片持久化到对象存储，合并时使用工作目录临时文件。
+ * 合并结果入库后，在同一事务记录分片清理意图；提交成功后回收本地工作副本。
  *
  * <p>「秒传」在这里的含义是<b>同一 uploadId 已经合并过就直接返回已有资产</b>，
- * 而不是按内容哈希跨文件去重（后者需要遍历所有媒体的哈希，demo 阶段不划算）。
+ * 不按内容哈希跨用户或跨文件去重。
  */
 @Service
 public class ChunkedUploadService {
@@ -47,10 +46,12 @@ public class ChunkedUploadService {
     private final com.videostudio.security.CurrentUser current;
     private final org.redisson.api.RedissonClient locks;
     private final org.springframework.transaction.support.TransactionTemplate transactions;
+    private final com.videostudio.storage.CleanupOutbox cleanup;
 
     public ChunkedUploadService(UploadSessionRepository repository, MediaIngestService ingestService,
                                 Storage storage, AppProperties props, com.videostudio.storage.ObjectStore objects,
-            com.videostudio.security.CurrentUser current, org.redisson.api.RedissonClient locks, org.springframework.transaction.support.TransactionTemplate transactions) {
+            com.videostudio.security.CurrentUser current, org.redisson.api.RedissonClient locks, org.springframework.transaction.support.TransactionTemplate transactions, com.videostudio.storage.CleanupOutbox cleanup) {
+        this.cleanup=cleanup;
         this.transactions=transactions;
         this.objects=objects; this.current=current; this.locks=locks;
         this.repository = repository;
@@ -180,9 +181,9 @@ public class ChunkedUploadService {
 
         MediaAsset asset = ingestService.ingestFile(assembled, session.name());
         repository.markFinished(session.uploadId(), asset.id());
-        objects.deletePrefix("uploads/"+session.uploadId()+"/");
-        // 正式文件已经在 media/{id} 下，整个分片目录都可以回收（会话行保留，用于幂等重试）
-        deleteDir(storage.uploadDir(session.uploadId()));
+        cleanup.upload(session.uploadId(),asset.id());
+        // 原件已写入对象存储；提交成功后回收工作副本，会话行保留用于幂等重试。
+        afterCommitDelete(storage.uploadDir(session.uploadId()));
         log.info("分片上传合并完成 uploadId={} assetId={} size={}", session.uploadId(), asset.id(), asset.sizeBytes());
         return new Merged(asset, false);
     }
@@ -214,13 +215,13 @@ public class ChunkedUploadService {
     }
 
     /** 取消上传：删会话与分片 */
-    public void cancel(String uploadId) { locked(normalise(uploadId),() -> { cancelLocked(uploadId); return null; }); }
+    public void cancel(String uploadId) { locked(normalise(uploadId),() -> transactions.execute(tx -> { cancelLocked(uploadId); return null; })); }
 
     private void cancelLocked(String uploadId) {
         String id = normalise(uploadId);
-        objects.deletePrefix("uploads/"+id+"/");
+        cleanup.upload(id,0);
         repository.delete(id);
-        deleteDir(storage.uploadDir(id));
+        afterCommitDelete(storage.uploadDir(id));
         log.info("分片上传已取消 id={}", id);
     }
 
@@ -240,9 +241,11 @@ public class ChunkedUploadService {
             try {
                 var session=repository.find(id);
                 if(session.isPresent() && !session.get().finished() && session.get().updatedAt().isBefore(before)) {
-                    objects.deletePrefix("uploads/"+id+"/");
-                    repository.delete(id);
-                    deleteDir(storage.uploadDir(id));
+                    transactions.executeWithoutResult(tx -> {
+                        cleanup.upload(id,0);
+                        repository.delete(id);
+                    });
+                    afterCommitDelete(storage.uploadDir(id));
                 }
             } finally { if(lock.isHeldByCurrentThread()) lock.unlock(); }
         }
@@ -263,12 +266,14 @@ public class ChunkedUploadService {
         return stale.size() + reclaimed;
     }
 
-    private void clear(String uploadId) {
-        objects.deletePrefix("uploads/"+uploadId+"/");
-        repository.delete(uploadId);
-        deleteDir(storage.uploadDir(uploadId));
+    private void afterCommitDelete(Path dir) {
+        if(org.springframework.transaction.support.TransactionSynchronizationManager.isSynchronizationActive()) {
+            org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
+                new org.springframework.transaction.support.TransactionSynchronization() {
+                    @Override public void afterCommit() { deleteDir(dir); }
+                });
+        } else deleteDir(dir);
     }
-
     private void deleteDir(Path dir) {
         if (!Files.exists(dir)) {
             return;

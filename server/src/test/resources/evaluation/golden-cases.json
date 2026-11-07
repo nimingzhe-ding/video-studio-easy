@@ -1,0 +1,515 @@
+{
+  "schemaVersion": 1,
+  "thresholds": {
+    "recallAtK": 1.0,
+    "meanReciprocalRank": 1.0,
+    "verdictAccuracy": 1.0
+  },
+  "contexts": [
+    {
+      "id": "meeting",
+      "transcripts": [
+        {
+          "startMs": 0,
+          "endMs": 10000,
+          "text": "新版将在周五发布，负责人是小林。",
+          "confidence": 1,
+          "speaker": null,
+          "source": "fixture"
+        },
+        {
+          "startMs": 10000,
+          "endMs": 20000,
+          "text": "缓存命中率提升到百分之九十。",
+          "confidence": 1,
+          "speaker": null,
+          "source": "fixture"
+        }
+      ],
+      "visuals": [
+        {
+          "timeMs": 0,
+          "framePath": "fixture/title.jpg",
+          "ocrText": "片头标题",
+          "caption": "",
+          "hash": "0",
+          "source": "fixture"
+        },
+        {
+          "timeMs": 15000,
+          "framePath": "fixture/frame.jpg",
+          "ocrText": "Q3 收入 120 万元",
+          "caption": "讲师指向收入柱状图",
+          "hash": "1",
+          "source": "fixture"
+        }
+      ],
+      "chunks": [
+        {
+          "chunkIndex": 0,
+          "startMs": 0,
+          "endMs": 10000,
+          "summary": "发布计划与负责人",
+          "keywords": [],
+          "visualKeywords": [],
+          "transcriptText": "新版将在周五发布，负责人是小林。",
+          "ocrText": "片头标题",
+          "embedding": [
+            1,
+            0
+          ],
+          "score": 0
+        },
+        {
+          "chunkIndex": 1,
+          "startMs": 10000,
+          "endMs": 20000,
+          "summary": "缓存性能优化",
+          "keywords": [],
+          "visualKeywords": [],
+          "transcriptText": "缓存命中率提升到百分之九十。",
+          "ocrText": "Q3 收入 120 万元",
+          "embedding": [
+            0,
+            1
+          ],
+          "score": 0
+        },
+        {
+          "chunkIndex": 2,
+          "startMs": 20000,
+          "endMs": 30000,
+          "summary": "招聘计划",
+          "keywords": [],
+          "visualKeywords": [],
+          "transcriptText": "下次会议讨论招聘。",
+          "ocrText": "",
+          "embedding": [
+            0.1,
+            0.1
+          ],
+          "score": 0
+        }
+      ]
+    }
+  ],
+  "retrievalCases": [
+    {
+      "id": "release-semantic",
+      "context": "meeting",
+      "query": "何时上线，由谁负责",
+      "semanticScores": {
+        "0": 0.95,
+        "1": 0.1,
+        "2": 0.05
+      },
+      "relevantChunks": [
+        0
+      ],
+      "topK": 1
+    },
+    {
+      "id": "ocr-numeric",
+      "context": "meeting",
+      "query": "Q3 收入 120 万元",
+      "semanticScores": {
+        "0": 0.1,
+        "1": 0.1,
+        "2": 0.1
+      },
+      "relevantChunks": [
+        1
+      ],
+      "topK": 1
+    },
+    {
+      "id": "performance-semantic",
+      "context": "meeting",
+      "query": "缓存性能优化",
+      "semanticScores": {
+        "0": 0.1,
+        "1": 0.95,
+        "2": 0.05
+      },
+      "relevantChunks": [
+        1
+      ],
+      "topK": 1
+    },
+    {
+      "id": "topk-retrieves-both-evidence-types",
+      "context": "meeting",
+      "query": "发布计划与缓存性能",
+      "semanticScores": {
+        "0": 0.8,
+        "1": 0.9,
+        "2": 0.05
+      },
+      "relevantChunks": [
+        0,
+        1
+      ],
+      "topK": 2
+    }
+  ],
+  "qualityCases": [
+    {
+      "id": "asr-supported",
+      "context": "meeting",
+      "draft": {
+        "title": "会议记录",
+        "conclusions": [
+          "新版将在周五发布"
+        ],
+        "evidence": [
+          {
+            "timestampMs": 1000,
+            "source": "ASR",
+            "content": "周五发布",
+            "claim": "新版将在周五发布"
+          }
+        ],
+        "suggestions": [],
+        "sections": []
+      },
+      "requiredSections": [],
+      "expectedPassed": true
+    },
+    {
+      "id": "ocr-supported",
+      "context": "meeting",
+      "draft": {
+        "title": "会议记录",
+        "conclusions": [
+          "收入为120万元"
+        ],
+        "evidence": [
+          {
+            "timestampMs": 15000,
+            "source": "OCR",
+            "content": "收入 120 万元",
+            "claim": "收入为120万元"
+          }
+        ],
+        "suggestions": [],
+        "sections": []
+      },
+      "requiredSections": [],
+      "expectedPassed": true
+    },
+    {
+      "id": "vision-supported",
+      "context": "meeting",
+      "draft": {
+        "title": "会议记录",
+        "conclusions": [
+          "讲师展示收入图"
+        ],
+        "evidence": [
+          {
+            "timestampMs": 15000,
+            "source": "VISION",
+            "content": "讲师指向收入柱状图",
+            "claim": "讲师展示收入图"
+          }
+        ],
+        "suggestions": [],
+        "sections": []
+      },
+      "requiredSections": [],
+      "expectedPassed": true
+    },
+    {
+      "id": "combined-source-supported",
+      "context": "meeting",
+      "draft": {
+        "title": "会议记录",
+        "conclusions": [
+          "收入为120万元"
+        ],
+        "evidence": [
+          {
+            "timestampMs": 15000,
+            "source": "ASR+OCR",
+            "content": "收入 120 万元",
+            "claim": "收入为120万元"
+          }
+        ],
+        "suggestions": [],
+        "sections": []
+      },
+      "requiredSections": [],
+      "expectedPassed": true
+    },
+    {
+      "id": "invented-quote",
+      "context": "meeting",
+      "draft": {
+        "title": "会议记录",
+        "conclusions": [
+          "新版将在周五发布"
+        ],
+        "evidence": [
+          {
+            "timestampMs": 1000,
+            "source": "ASR",
+            "content": "下周一发布",
+            "claim": "新版将在周五发布"
+          }
+        ],
+        "suggestions": [],
+        "sections": []
+      },
+      "requiredSections": [],
+      "expectedPassed": false
+    },
+    {
+      "id": "wrong-source",
+      "context": "meeting",
+      "draft": {
+        "title": "会议记录",
+        "conclusions": [
+          "讲师展示收入图"
+        ],
+        "evidence": [
+          {
+            "timestampMs": 15000,
+            "source": "OCR",
+            "content": "讲师指向收入柱状图",
+            "claim": "讲师展示收入图"
+          }
+        ],
+        "suggestions": [],
+        "sections": []
+      },
+      "requiredSections": [],
+      "expectedPassed": false
+    },
+    {
+      "id": "unknown-source-substring",
+      "context": "meeting",
+      "draft": {
+        "title": "会议记录",
+        "conclusions": [
+          "新版将在周五发布"
+        ],
+        "evidence": [
+          {
+            "timestampMs": 1000,
+            "source": "NOT_ASR",
+            "content": "周五发布",
+            "claim": "新版将在周五发布"
+          }
+        ],
+        "suggestions": [],
+        "sections": []
+      },
+      "requiredSections": [],
+      "expectedPassed": false
+    },
+    {
+      "id": "empty-quote",
+      "context": "meeting",
+      "draft": {
+        "title": "会议记录",
+        "conclusions": [
+          "新版将在周五发布"
+        ],
+        "evidence": [
+          {
+            "timestampMs": 1000,
+            "source": "ASR",
+            "content": "",
+            "claim": "新版将在周五发布"
+          }
+        ],
+        "suggestions": [],
+        "sections": []
+      },
+      "requiredSections": [],
+      "expectedPassed": false
+    },
+    {
+      "id": "punctuation-only-quote",
+      "context": "meeting",
+      "draft": {
+        "title": "会议记录",
+        "conclusions": [
+          "新版将在周五发布"
+        ],
+        "evidence": [
+          {
+            "timestampMs": 1000,
+            "source": "ASR",
+            "content": "，。！？",
+            "claim": "新版将在周五发布"
+          }
+        ],
+        "suggestions": [],
+        "sections": []
+      },
+      "requiredSections": [],
+      "expectedPassed": false
+    },
+    {
+      "id": "negative-visual-time",
+      "context": "meeting",
+      "draft": {
+        "title": "会议记录",
+        "conclusions": [
+          "片头有标题"
+        ],
+        "evidence": [
+          {
+            "timestampMs": -1,
+            "source": "OCR",
+            "content": "片头标题",
+            "claim": "片头有标题"
+          }
+        ],
+        "suggestions": [],
+        "sections": []
+      },
+      "requiredSections": [],
+      "expectedPassed": false
+    },
+    {
+      "id": "timestamp-outside-evidence",
+      "context": "meeting",
+      "draft": {
+        "title": "会议记录",
+        "conclusions": [
+          "新版将在周五发布"
+        ],
+        "evidence": [
+          {
+            "timestampMs": 90000,
+            "source": "ASR",
+            "content": "周五发布",
+            "claim": "新版将在周五发布"
+          }
+        ],
+        "suggestions": [],
+        "sections": []
+      },
+      "requiredSections": [],
+      "expectedPassed": false
+    },
+    {
+      "id": "required-section-missing",
+      "context": "meeting",
+      "draft": {
+        "title": "会议记录",
+        "conclusions": [
+          "新版将在周五发布"
+        ],
+        "evidence": [
+          {
+            "timestampMs": 1000,
+            "source": "ASR",
+            "content": "周五发布",
+            "claim": "新版将在周五发布"
+          }
+        ],
+        "suggestions": [],
+        "sections": []
+      },
+      "requiredSections": [
+        "decisions"
+      ],
+      "expectedPassed": false
+    },
+    {
+      "id": "unsupported-conclusion",
+      "context": "meeting",
+      "draft": {
+        "title": "会议记录",
+        "conclusions": [
+          "新版将在周五发布"
+        ],
+        "evidence": [
+          {
+            "timestampMs": 1000,
+            "source": "ASR",
+            "content": "周五发布",
+            "claim": "与结论无关"
+          }
+        ],
+        "suggestions": [],
+        "sections": []
+      },
+      "requiredSections": [],
+      "expectedPassed": false
+    },
+    {
+      "id": "missing-conclusions",
+      "context": "meeting",
+      "draft": {
+        "title": "会议记录",
+        "conclusions": [],
+        "evidence": [
+          {
+            "timestampMs": 1000,
+            "source": "ASR",
+            "content": "周五发布",
+            "claim": "新版将在周五发布"
+          }
+        ],
+        "suggestions": [],
+        "sections": []
+      },
+      "requiredSections": [],
+      "expectedPassed": false
+    },
+    {
+      "id": "missing-evidence",
+      "context": "meeting",
+      "draft": {
+        "title": "会议记录",
+        "conclusions": [
+          "新版将在周五发布"
+        ],
+        "evidence": [],
+        "suggestions": [],
+        "sections": []
+      },
+      "requiredSections": [],
+      "expectedPassed": false
+    },
+    {
+      "id": "missing-title",
+      "context": "meeting",
+      "draft": {
+        "title": "",
+        "conclusions": [
+          "新版将在周五发布"
+        ],
+        "evidence": [
+          {
+            "timestampMs": 1000,
+            "source": "ASR",
+            "content": "周五发布",
+            "claim": "新版将在周五发布"
+          }
+        ],
+        "suggestions": [],
+        "sections": []
+      },
+      "requiredSections": [],
+      "expectedPassed": false
+    },
+    {
+      "id": "empty-draft",
+      "context": "meeting",
+      "draft": {
+        "title": "",
+        "conclusions": [],
+        "evidence": [],
+        "suggestions": [],
+        "sections": []
+      },
+      "requiredSections": [],
+      "expectedPassed": false
+    }
+  ]
+}

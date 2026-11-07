@@ -18,15 +18,16 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 
-@WebMvcTest(controllers={SecurityBoundaryTest.ProtectedReport.class,AuthController.class},
+@WebMvcTest(controllers={SecurityBoundaryTest.ProtectedReport.class,AuthController.class,AdminDeliveryController.class},
     properties={"auth.registration-enabled=false"})
 @Import({SecurityConfig.class,CurrentUser.class,OwnerGuard.class,AuthController.class,
-    SecurityBoundaryTest.ProtectedReport.class,com.videostudio.web.ApiExceptionHandler.class,
+    SecurityBoundaryTest.ProtectedReport.class,AdminDeliveryController.class,com.videostudio.web.ApiExceptionHandler.class,
     SecurityBoundaryTest.OwnershipConfig.class})
 class SecurityBoundaryTest {
     @Autowired MockMvc mvc;
     @MockBean JdbcTemplate jdbc;
     @MockBean RateLimiter limiter;
+    @MockBean com.videostudio.service.FailedDeliveryService deliveries;
     @RestController static class ProtectedReport {
         @GetMapping("/api/jobs/{id}/report") ApiResponse<?> report(@PathVariable long id) { return ApiResponse.success("private"); }
     }
@@ -64,6 +65,19 @@ class SecurityBoundaryTest {
     }
     @WithMockUser(username="7") @Test void normalUserCannotManageAccounts() throws Exception {
         mvc.perform(get("/api/admin/users")).andExpect(status().isForbidden());
+    }
+    @WithMockUser(username="7") @Test void normalUserCannotResolveInvalidMessages() throws Exception {
+        mvc.perform(post("/api/admin/failed-deliveries/11/resolve").with(csrf())).andExpect(status().isForbidden());
+        org.mockito.Mockito.verifyNoInteractions(deliveries);
+    }
+    @WithMockUser(username="7",roles="ADMIN") @Test void resolvingMessageRequiresCsrfEvenForAdmin() throws Exception {
+        mvc.perform(post("/api/admin/failed-deliveries/11/resolve")).andExpect(status().isForbidden());
+        org.mockito.Mockito.verifyNoInteractions(deliveries);
+    }
+    @WithMockUser(username="7",roles="ADMIN") @Test void adminResolutionRecordsAuthenticatedOperator() throws Exception {
+        mvc.perform(post("/api/admin/failed-deliveries/11/resolve").with(csrf()))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.data.resolved").value(true));
+        org.mockito.Mockito.verify(deliveries).resolve(11,7);
     }
     @Test void successfulLoginPersistsAuthenticationForLaterRequests() throws Exception {
         var encoder=new org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder(4);

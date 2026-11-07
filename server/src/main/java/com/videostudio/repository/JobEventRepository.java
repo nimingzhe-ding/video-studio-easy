@@ -20,7 +20,7 @@ public class JobEventRepository {
             rs.getString("type"),
             rs.getString("level"),
             rs.getInt("progress"),
-            rs.getString("message"),
+            com.videostudio.common.SafeErrors.redact(rs.getString("message")),
             rs.getString("payload_json"),
             Sql.instant(rs.getTimestamp("created_at")));
 
@@ -36,7 +36,7 @@ public class JobEventRepository {
                 VALUES (?,?,?,?,?,?,?,?,?)
                 """,
                 jobId, seq, event.stage().name(), event.type(), event.level(), event.progress(),
-                event.message(), event.payloadJson(), Sql.now());
+                com.videostudio.common.SafeErrors.redact(event.message()), event.payloadJson(), Sql.now());
     }
 
     public List<JobEvent> list(long jobId, long afterSeq, int limit) {

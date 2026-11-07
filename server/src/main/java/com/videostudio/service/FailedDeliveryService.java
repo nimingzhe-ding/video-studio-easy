@@ -9,10 +9,10 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 失败投递的运维面：查看「重试耗尽后落库」的任务，并把它们重新投递。
+ * 失败投递的运维面：查询失败任务与异常消息，分别重投或记录处理结果。
  *
  * <p>没有这一层时，死信只体现在一个 Prometheus 计数上——运维知道有积压，却不知道是哪些任务，
- * 只能进数据库手写 SQL。这里提供两个动作：列出来，以及按任务重新排队。
+ * 只能进数据库手写 SQL。异常消息仅允许标记处理，不能变成模型分析任务。
  *
  * <p>重投走与人工重试完全相同的路径（递增 generation + 写发件箱），所以旧代次的消息
  * 即使在 DLQ 里被误重放也无法启动新一代任务。
@@ -20,9 +20,10 @@ import java.util.Map;
 @Service
 public class FailedDeliveryService {
 
-    /** 一条失败投递：任务、代次、原始消息与失败原因 */
+    /** 原始消息只保留标识与摘要；无效消息不关联业务任务。 */
     public record FailedDelivery(long id, long jobId, int generation, String messageId, String reason,
-                                 java.time.Instant createdAt, boolean replayed) {
+                                 java.time.Instant createdAt, boolean replayed, String failureKind,
+                                 String payloadSha256, boolean replayable, boolean resolved) {
     }
 
     private final JdbcTemplate jdbc;
@@ -35,22 +36,27 @@ public class FailedDeliveryService {
         this.jobs = jobs;
     }
 
-    /** @param pendingOnly true 只看还没重投过的 */
+    /** @param pendingOnly true 只看尚未重投或标记处理的 */
     public List<FailedDelivery> list(boolean pendingOnly, int limit) {
         String sql = """
-                SELECT id, job_id, generation, message_id, reason, created_at, replayed_at
+                SELECT id, job_id, generation, message_id, reason, created_at, replayed_at,
+                       failure_kind, payload_sha256, resolved_at
                 FROM failed_delivery
                 %s
                 ORDER BY id DESC LIMIT ?
-                """.formatted(pendingOnly ? "WHERE replayed_at IS NULL" : "");
+                """.formatted(pendingOnly ? "WHERE replayed_at IS NULL AND resolved_at IS NULL" : "");
         return jdbc.query(sql, (rs, i) -> new FailedDelivery(
                 rs.getLong("id"),
                 rs.getLong("job_id"),
                 rs.getInt("generation"),
                 rs.getString("message_id"),
-                rs.getString("reason"),
+                com.videostudio.common.SafeErrors.redact(rs.getString("reason")),
                 com.videostudio.common.Sql.instant(rs.getTimestamp("created_at")),
-                rs.getTimestamp("replayed_at") != null), Math.max(1, Math.min(200, limit)));
+                rs.getTimestamp("replayed_at") != null,
+                rs.getString("failure_kind"), rs.getString("payload_sha256"),
+                "TASK_FAILURE".equals(rs.getString("failure_kind")) && rs.getLong("job_id")>0
+                    && rs.getInt("generation")>0 && rs.getTimestamp("replayed_at")==null && rs.getTimestamp("resolved_at")==null,
+                rs.getTimestamp("resolved_at") != null), Math.max(1, Math.min(200, limit)));
     }
 
     /**
@@ -62,7 +68,7 @@ public class FailedDeliveryService {
     public long replay(long deliveryId, long operatorId) {
         return transactions.execute(status -> {
             var rows = jdbc.queryForList("""
-                    SELECT job_id, generation, replayed_at FROM failed_delivery WHERE id = ? FOR UPDATE
+                    SELECT job_id, generation, replayed_at, failure_kind, resolved_at FROM failed_delivery WHERE id = ? FOR UPDATE
                     """, deliveryId);
             if (rows.isEmpty()) {
                 throw ApiException.notFound("失败投递记录不存在: " + deliveryId);
@@ -72,10 +78,26 @@ public class FailedDeliveryService {
                 throw ApiException.conflict("这条失败记录已经重投过，请勿重复操作");
             }
             long jobId = ((Number) row.get("job_id")).longValue();
+            if (!"TASK_FAILURE".equals(row.get("failure_kind")) || jobId<=0
+                || ((Number)row.get("generation")).intValue()<=0 || row.get("resolved_at")!=null)
+                throw ApiException.conflict("异常消息或已处理记录不能重投，请修复发送方后重新提交任务");
             jobs.retryAsAdmin(jobId);
             jdbc.update("UPDATE failed_delivery SET replayed_at = NOW(3), replayed_by = ? WHERE id = ?",
                     operatorId, deliveryId);
             return jobId;
+        });
+    }
+
+    /** Acknowledges investigation of an invalid message, retaining its audit record. */
+    public void resolve(long deliveryId, long operatorId) {
+        transactions.executeWithoutResult(status -> {
+            var rows=jdbc.queryForList("SELECT failure_kind, resolved_at FROM failed_delivery WHERE id = ? FOR UPDATE",deliveryId);
+            if(rows.isEmpty()) throw ApiException.notFound("失败投递记录不存在: "+deliveryId);
+            var row=rows.get(0);
+            if(!"INVALID_MESSAGE".equals(row.get("failure_kind")))
+                throw ApiException.conflict("任务失败请使用重投处理");
+            if(row.get("resolved_at")!=null) return;
+            jdbc.update("UPDATE failed_delivery SET resolved_at=NOW(3),resolved_by=? WHERE id=?",operatorId,deliveryId);
         });
     }
 }

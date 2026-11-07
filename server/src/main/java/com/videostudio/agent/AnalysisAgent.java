@@ -76,6 +76,8 @@ public class AnalysisAgent {
         Instant deadline = Instant.now().plus(Duration.ofMillis(Math.max(30_000, props.getMaxDurationMs())));
         List<HybridRetriever.Hit> hits = retriever.search(request.jobId(), intent.query(), request.chunks(),
                 request.transcripts(), request.visuals());
+        String retrievalNotice=HybridRetriever.fallbackNotice(hits);
+        if(!retrievalNotice.isEmpty()) progress.accept(retrievalNotice);
         List<TranscriptSegment> evidenceSegments = new ArrayList<>();
         List<VisualEvidence> evidenceVisuals = new ArrayList<>();
         for (HybridRetriever.Hit hit : hits) {
@@ -95,7 +97,7 @@ public class AnalysisAgent {
         int maxRounds = Math.max(1, props.getMaxRounds());
         while (rounds < maxRounds && Instant.now().isBefore(deadline)) {
             if (budget != null && budget.exceeded(request.jobId())) {
-                throw new IllegalStateException("本任务模型预算已用尽");
+                throw new com.videostudio.common.ApiException(429,"本任务模型预算已用尽");
             }
             rounds++;
             progress.accept("第 %d 轮：生成结构化产物".formatted(rounds));
@@ -118,6 +120,8 @@ public class AnalysisAgent {
                 evidenceVisuals = expandVisual(evidenceVisuals, recalled.visuals());
                 List<HybridRetriever.Hit> extra = retriever.search(request.jobId(), critiqueQuery(request.goal(), critique),
                         request.chunks(), request.transcripts(), request.visuals());
+                String extraNotice=HybridRetriever.fallbackNotice(extra);
+                if(!extraNotice.isEmpty()) progress.accept(extraNotice);
                 for (HybridRetriever.Hit hit : extra) {
                     evidenceSegments = expand(evidenceSegments, hit.segments());
                     evidenceVisuals = expandVisual(evidenceVisuals, hit.evidences());

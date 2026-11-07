@@ -21,4 +21,11 @@ jobs:
         working-directory: client
       - run: mvn -B verify
         working-directory: server
+      - name: Upload deterministic agent evaluation
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-evaluation
+          path: server/target/evaluation/
+          if-no-files-found: warn
       - run: docker build -f docker/Dockerfile -t video-studio:verify .

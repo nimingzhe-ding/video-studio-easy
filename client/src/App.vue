@@ -140,7 +140,7 @@ async function loadDeliveries() {
 
 /** 重投一条失败投递：后端会递增代次并重新排队，成功后从待处理列表里移除 */
 async function replayDelivery(item) {
-  if (busy.value) {
+  if (busy.value || !item.replayable) {
     return;
   }
   busy.value = true;
@@ -149,6 +149,20 @@ async function replayDelivery(item) {
     deliveries.value = deliveries.value.filter((row) => row.id !== item.id);
     notify(`任务 NO.${String(item.jobId).padStart(4, '0')} 已重新排队`, 'ok');
     jobs.value = (await api.listJobs(100)) || [];
+  } catch (e) {
+    notify(e.message, 'err');
+  } finally {
+    busy.value = false;
+  }
+}
+
+async function resolveDelivery(item) {
+  if (busy.value || item.failureKind !== 'INVALID_MESSAGE') return;
+  busy.value = true;
+  try {
+    await api.resolveDelivery(item.id);
+    deliveries.value = deliveries.value.filter((row) => row.id !== item.id);
+    notify('异常消息已标记处理，审计记录已保留', 'ok');
   } catch (e) {
     notify(e.message, 'err');
   } finally {
@@ -752,13 +766,13 @@ async function retryCurrentJob() {
                 {{ runtime.objectStorageEnabled ? runtime.objectStorage || '已连接' : '不可用' }}
               </span>
             </div>
-            <div class="env-row" title="语义召回走向量库；索引不可用时本次检索退化为关键词匹配">
+            <div class="env-row" title="优先使用向量库；异常重试后，可使用已有向量或关键词，并标记检索状态">
               <span class="k">向量检索</span>
               <span class="badge" :class="runtime.vectorStoreEnabled ? 'accent' : ''" style="margin-left: auto">
                 {{ runtime.vectorStoreEnabled ? runtime.vectorStore || '已连接' : '不可用' }}
               </span>
             </div>
-            <div class="hint">模型及存储服务异常时，任务会停止并保留错误信息，可在恢复后重试。</div>
+            <div class="hint">模型异常会停止任务；检索服务异常时按配置尝试恢复，并在报告中说明。</div>
           </div>
         </div>
       </section>
@@ -775,12 +789,15 @@ async function retryCurrentJob() {
             <div v-if="!deliveries.length" class="empty">没有待处理的失败投递。</div>
             <div v-for="item in deliveries" :key="item.id" class="item delivery-item">
               <div class="item-main">
-                <div class="item-title">任务 NO.{{ String(item.jobId).padStart(4, '0') }} · 第 {{ item.generation }} 代</div>
+                <div v-if="item.failureKind === 'INVALID_MESSAGE'" class="item-title">异常队列消息</div>
+                <div v-else class="item-title">任务 NO.{{ String(item.jobId).padStart(4, '0') }} · 第 {{ item.generation }} 代</div>
                 <div class="item-sub" :title="item.reason">{{ item.reason }}</div>
+                <div v-if="item.failureKind === 'INVALID_MESSAGE'" class="item-sub">请排查消息发送方；此消息不能直接重投。</div>
                 <div class="item-sub asset-line">{{ formatRelative(item.createdAt) }}</div>
               </div>
               <div class="item-actions">
-                <button class="ghost" :disabled="busy" @click="replayDelivery(item)">重投</button>
+                <button v-if="item.failureKind === 'INVALID_MESSAGE'" class="ghost" :disabled="busy" @click="resolveDelivery(item)">标记已处理</button>
+                <button v-else class="ghost" :disabled="busy || !item.replayable" @click="replayDelivery(item)">重投</button>
               </div>
             </div>
           </div>

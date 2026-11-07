@@ -99,7 +99,7 @@ public class LlmGateway {
                 if(metrics!=null) metrics.tokens(payload.path("model").asText(),tokens);
                 return root;
             }
-            if(response.status()!=429 && response.status()<500) throw new ApiException(502,"模型服务拒绝请求（HTTP "+response.status()+"），请检查模型与服务端配置");
+            if(response.status()!=429 && response.status()<500) throw new ModelRequestRejectedException(response.status());
             if(attempt<attempts) pause(attempt);
         }
         throw new ApiException(502,"模型服务暂时不可用，重试次数已用尽");

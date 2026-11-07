@@ -32,6 +32,7 @@ public class JobMetrics {
     private final AtomicLong outboxPending = new AtomicLong();
     private final AtomicLong outboxOldestAge = new AtomicLong();
     private final AtomicLong failedDelivery = new AtomicLong();
+    private final AtomicLong invalidMessagesPending = new AtomicLong();
 
     public JobMetrics(MeterRegistry registry) {
         this.registry = registry;
@@ -48,8 +49,10 @@ public class JobMetrics {
                 .description("最老的未投递发件箱记录年龄，积压告警用它")
                 .register(registry);
         Gauge.builder("videostudio_failed_delivery_total", failedDelivery, AtomicLong::get)
-                .description("重试耗尽后写入死信记录的任务数")
+                .description("失败投递台账记录数，含永久失败与异常消息")
                 .register(registry);
+        Gauge.builder("videostudio_invalid_messages_pending",invalidMessagesPending,AtomicLong::get)
+                .description("尚未排查处理的异常队列消息数").register(registry);
     }
 
     /** 刷新发件箱积压指标。参数由投递器在每轮扫描时用一条聚合查询算出 */
@@ -58,6 +61,8 @@ public class JobMetrics {
         outboxOldestAge.set(oldestAgeSeconds);
         failedDelivery.set(failed);
     }
+
+    public void invalidMessagesPending(long count) { invalidMessagesPending.set(count); }
 
     /** 记录一次任务重新排队；reason=stale 表示执行者失联，gave_up 表示放弃自动重跑 */
     public void jobRequeued(String reason) {
@@ -130,6 +135,9 @@ public class JobMetrics {
     }
 
 
+    public void retrievalFallback(String mode) {
+        Counter.builder("videostudio_retrieval_fallback_total").tag("mode",mode).register(registry).increment();
+    }
     public void markOverBudget() {
         overBudget.incrementAndGet();
     }

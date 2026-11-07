@@ -1,6 +1,5 @@
 package com.videostudio.queue;
 
-import com.videostudio.common.Json;
 import com.videostudio.domain.JobStatus;
 import com.videostudio.repository.JobRepository;
 import com.videostudio.service.AnalysisPipeline;
@@ -10,7 +9,6 @@ import org.apache.rocketmq.spring.core.RocketMQListener;
 import org.redisson.api.RedissonClient;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
-import java.nio.charset.StandardCharsets;
 import java.util.concurrent.TimeUnit;
 
 @Component
@@ -21,25 +19,57 @@ import java.util.concurrent.TimeUnit;
 public class AnalysisConsumer implements RocketMQListener<MessageExt> {
     private final JobRepository jobs; private final AnalysisPipeline pipeline;
     private final JdbcTemplate jdbc; private final RedissonClient redis;
-    public AnalysisConsumer(JobRepository jobs,AnalysisPipeline pipeline,JdbcTemplate jdbc,RedissonClient redis) {
+    private final org.springframework.transaction.support.TransactionTemplate transactions;
+    public AnalysisConsumer(JobRepository jobs,AnalysisPipeline pipeline,JdbcTemplate jdbc,RedissonClient redis,org.springframework.transaction.support.TransactionTemplate transactions) {
+        this.transactions=transactions;
         this.jobs=jobs; this.pipeline=pipeline; this.jdbc=jdbc; this.redis=redis;
     }
+    private void recordFailure(long id,int generation,MessageExt message,String reason) {
+        jdbc.update("INSERT IGNORE INTO failed_delivery(job_id,generation,message_id,reason,created_at) VALUES (?,?,?,?,NOW(3))",
+            id,generation,AnalysisMessage.identity(message.getMsgId(),message.getBody()),com.videostudio.common.SafeErrors.message(reason,512));
+    }
+    private boolean permanent(Throwable error) {
+        for(int depth=0;error!=null && depth<8;depth++,error=error.getCause()) {
+            if(error instanceof com.videostudio.llm.ModelRequestRejectedException) return true;
+            if(error instanceof com.videostudio.common.ApiException api &&
+                java.util.Set.of(400,401,403,404,413,422,429).contains(api.status())) return true;
+        }
+        return false;
+    }
     @Override public void onMessage(MessageExt message) {
-        var payload=Json.tree(new String(message.getBody(),StandardCharsets.UTF_8));
-        long id=payload.path("jobId").asLong();
-        int generation=payload.path("generation").asInt();
-        if(id<=0 || generation<=0) throw new IllegalArgumentException("无效的任务消息");
+        AnalysisMessage payload;
+        try { payload=AnalysisMessage.parse(message.getBody()); }
+        catch(IllegalArgumentException ex) {
+            jdbc.update("""
+                INSERT IGNORE INTO failed_delivery(job_id,generation,message_id,reason,failure_kind,payload_sha256,created_at)
+                VALUES (0,0,?,?,'INVALID_MESSAGE',?,NOW(3))
+                """,AnalysisMessage.identity(message.getMsgId(),message.getBody()),
+                "异常队列消息："+ex.getMessage(),AnalysisMessage.digest(message.getBody()));
+            return; // Only acknowledge after the audit write succeeds. Invalid bodies are never replayed.
+        }
+        long id=payload.jobId();
+        int generation=payload.generation();
         var lock=redis.getLock("worker:job:"+id);
         boolean acquired=false;
         try {
             acquired=lock.tryLock(0,TimeUnit.SECONDS);
             if(!acquired) {
-                // 同一任务的另一条投递正在跑（重复投递、或 Broker 因消费超时重投）。
-                // 这里必须确认而不是抛错：抛错会消耗重投次数，长任务的重复投递能把消息推进死信；
-                // 而万一持有者正好挂掉，任务停在 RUNNING 时会由 StaleJobReaper 重新排队。
-                org.slf4j.LoggerFactory.getLogger(getClass())
-                    .info("任务 {} 正由其他消费者执行，本条投递直接确认",id);
-                return;
+                var current=jobs.find(id).orElse(null);
+                if(current==null || current.status()==JobStatus.SUCCEEDED || current.status()==JobStatus.CANCELED) return;
+                Integer active=jdbc.queryForObject("SELECT generation FROM analysis_job WHERE id=?",Integer.class,id);
+                if(active==null || active!=generation) return;
+                // Only a RUNNING task has an execution owner that the reaper can recover.
+                if(current.status()==JobStatus.RUNNING) return;
+                if(message.getReconsumeTimes()>=3) {
+                    transactions.executeWithoutResult(tx -> {
+                        int changed=jdbc.update("""
+                            UPDATE analysis_job SET status='FAILED',stage='FAILED',error=?,finished_at=NOW(3),updated_at=NOW(3)
+                            WHERE id=? AND generation=? AND status IN ('PENDING','FAILED')
+                            ""","消费执行锁持续冲突，请稍后重试",id,generation);
+                        if(changed==1) recordFailure(id,generation,message,"执行锁持续冲突，投递重试已用尽");
+                    });
+                }
+                throw new IllegalStateException("任务尚未启动，等待执行锁释放后重投");
             }
             var job=jobs.find(id).orElse(null);
             if(job==null || job.status()==JobStatus.SUCCEEDED || job.status()==JobStatus.CANCELED) return;
@@ -48,12 +78,14 @@ public class AnalysisConsumer implements RocketMQListener<MessageExt> {
             try {
                 pipeline.run(id);
             } catch(RuntimeException ex) {
-                jobs.markFailed(id, com.videostudio.common.Texts.oneLine(ex.getMessage(),300));
+                jobs.markFailed(id, com.videostudio.common.SafeErrors.message(ex.getMessage(),300));
                 if(jobs.find(id).map(j -> j.status()==JobStatus.CANCELED).orElse(true)) return;
-                if(message.getReconsumeTimes()>=3) {
-                    jdbc.update("INSERT IGNORE INTO failed_delivery(job_id,generation,message_id,reason,created_at) VALUES (?,?,?,?,NOW(3))",
-                        id,generation,message.getMsgId(),"自动重试次数已用尽；原始消息保留在 RocketMQ 死信队列");
+                if(permanent(ex)) {
+                    recordFailure(id,generation,message,"永久错误或预算耗尽，已停止自动重试");
+                    return;
                 }
+                if(message.getReconsumeTimes()>=3)
+                    recordFailure(id,generation,message,"自动重试次数已用尽；原始消息保留在 RocketMQ 死信队列");
                 throw ex; // Broker retry; after the limit RocketMQ moves the message to %DLQ%group.
             }
         } catch(InterruptedException ex) {

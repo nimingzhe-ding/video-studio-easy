@@ -52,6 +52,7 @@ class OutboxDispatcherTest {
         when(jdbc.queryForObject(anyString(),eq(Long.class))).thenReturn(2L);
         new OutboxDispatcher(jdbc,mq,"analysis",metrics,transactions()).dispatch();
         verify(metrics).outbox(4L,93L,2L);
+        verify(metrics).invalidMessagesPending(2L);
     }
 
     /**

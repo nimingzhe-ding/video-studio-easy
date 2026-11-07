@@ -38,6 +38,7 @@ class FailedDeliveryServiceTest {
         TransactionTemplate template = mock(TransactionTemplate.class);
         when(template.execute(any())).thenAnswer(invocation ->
                 ((TransactionCallback<Object>) invocation.getArgument(0)).doInTransaction(null));
+        org.mockito.Mockito.doCallRealMethod().when(template).executeWithoutResult(any());
         return template;
     }
 
@@ -51,6 +52,7 @@ class FailedDeliveryServiceTest {
         map.put("job_id", 7L);
         map.put("generation", 2);
         map.put("replayed_at", replayedAt);
+        map.put("failure_kind", "TASK_FAILURE");
         return map;
     }
 
@@ -85,6 +87,25 @@ class FailedDeliveryServiceTest {
         verify(jobs, never()).retryAsAdmin(anyLong());
     }
 
+    @Test void invalidMessageCannotStartAnAnalysis() {
+        var invalid=row(null); invalid.put("failure_kind","INVALID_MESSAGE"); invalid.put("job_id",0L);
+        when(jdbc.queryForList(contains("FROM failed_delivery WHERE id = ?"),eq(99L))).thenReturn(List.of(invalid));
+        assertThrows(com.videostudio.common.ApiException.class,()->service().replay(99,3));
+        verify(jobs,never()).retryAsAdmin(anyLong());
+    }
+    @Test void resolvingInvalidMessageRetainsAuditAndRecordsOperator() {
+        when(jdbc.queryForList(contains("FROM failed_delivery WHERE id = ?"),eq(99L)))
+            .thenReturn(List.of(Map.of("failure_kind","INVALID_MESSAGE")));
+        service().resolve(99,3);
+        verify(jdbc).update(contains("SET resolved_at=NOW(3),resolved_by=?"),eq(3L),eq(99L));
+        verify(jobs,never()).retryAsAdmin(anyLong());
+    }
+    @Test void taskFailureCannotBeHiddenByResolvingIt() {
+        when(jdbc.queryForList(contains("FROM failed_delivery WHERE id = ?"),eq(99L))).thenReturn(List.of(row(null)));
+        assertThrows(com.videostudio.common.ApiException.class,()->service().resolve(99,3));
+        verify(jdbc,never()).update(contains("SET resolved_at"),any(),any());
+    }
+
     /** 默认只看未重投的：已经处理过的记录留在表里作为审计痕迹，但不该继续占据运维视线 */
     @Test
     void pendingOnlyExcludesAlreadyReplayedRows() {
@@ -92,7 +113,7 @@ class FailedDeliveryServiceTest {
 
         service().list(true, 50);
 
-        verify(jdbc).query(contains("WHERE replayed_at IS NULL"),
+        verify(jdbc).query(contains("WHERE replayed_at IS NULL AND resolved_at IS NULL"),
                 any(org.springframework.jdbc.core.RowMapper.class), eq(50));
     }
 }

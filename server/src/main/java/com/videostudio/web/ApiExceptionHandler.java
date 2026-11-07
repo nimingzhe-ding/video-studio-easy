@@ -2,6 +2,7 @@ package com.videostudio.web;
 
 import com.videostudio.common.ApiException;
 import com.videostudio.common.ApiResponse;
+import com.videostudio.common.SafeErrors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -19,7 +20,7 @@ public class ApiExceptionHandler {
 
     @ExceptionHandler(ApiException.class)
     public ResponseEntity<ApiResponse<Void>> handle(ApiException e) {
-        return ResponseEntity.status(e.status()).body(ApiResponse.error(e.getMessage()));
+        return ResponseEntity.status(e.status()).body(ApiResponse.error(SafeErrors.message(e.getMessage(), 500)));
     }
 
     @ExceptionHandler(MaxUploadSizeExceededException.class)
@@ -35,7 +36,7 @@ public class ApiExceptionHandler {
 
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<ApiResponse<Void>> badRequest(IllegalArgumentException e) {
-        return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        return ResponseEntity.badRequest().body(ApiResponse.error(SafeErrors.message(e.getMessage(), 500)));
     }
 
     @ExceptionHandler({org.springframework.dao.DataAccessResourceFailureException.class,
