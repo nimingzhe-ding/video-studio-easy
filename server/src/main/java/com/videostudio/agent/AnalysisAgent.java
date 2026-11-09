@@ -190,13 +190,36 @@ public class AnalysisAgent {
         }
         user.append("\nVideoContext:\n").append(context);
 
-        String raw = ask(prompts.get("system"), prompts.get("executor") + "\n\n" + user, 0.3, 2_200, "execute");
+        // 2200 不够：10 分钟视频的产物包含十几条结论与证据，实测会被截断成半个 JSON，
+        // 而截断后的内容无法解析，表现为「模型未返回有效产物」——一个纯配额问题伪装成模型故障。
+        String raw = ask(prompts.get("system"), prompts.get("executor") + "\n\n" + user, 0.3, 4_096, "execute");
         AgentModels.Draft draft = ContextRenderer.parseDraft(raw);
         if (draft == null && previous == null) {
+            logDraftFailure(request.jobId(), "首次", raw);
             draft = ContextRenderer.parseDraft(ask(prompts.get("system"),
-                    prompts.get("executor") + "\n\n" + user + JSON_RETRY_SUFFIX, 0.1, 2_200, "execute-retry"));
+                    prompts.get("executor") + "\n\n" + user + JSON_RETRY_SUFFIX, 0.1, 4_096, "execute-retry"));
+            if (draft == null) {
+                logDraftFailure(request.jobId(), "重试", raw);
+            }
         }
         return draft;
+    }
+
+    /**
+     * 产物解析失败时留下可诊断的线索。
+     *
+     * <p>「模型未返回有效产物」这个错误太笼统：它既可能是输出被 max_tokens 截断，
+     * 也可能是模型写了散文而没有 JSON。前者要调配额，后者要调提示词，
+     * 不给线索就只能靠猜。这里记录结尾片段与是否被截断。
+     */
+    private void logDraftFailure(long jobId, String which, String raw) {
+        if (raw == null) {
+            log.warn("job {} {}产物为空", jobId, which);
+            return;
+        }
+        String tail = raw.length() <= 300 ? raw : "…" + raw.substring(raw.length() - 300);
+        log.warn("job {} {}产物解析失败 len={} 疑似截断={} 尾部: {}",
+                jobId, which, raw.length(), !raw.stripTrailing().endsWith("}"), tail);
     }
 
     /**
