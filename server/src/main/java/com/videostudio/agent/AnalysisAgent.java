@@ -215,7 +215,17 @@ public class AnalysisAgent {
         String raw = ask(prompts.get("system"), user, 0.0, 900, "critic");
         AgentModels.Critique modelView = ContextRenderer.parseCritique(raw);
         if (modelView == null) {
-            throw new IllegalStateException("模型返回的证据校验结构不合法");
+            // Critic 只是建议角色，它自己的输出格式坏掉不该拖垮整个任务：
+            // 长视频（3 分钟以上）上下文更大，模型返回非 JSON 的概率明显上升，
+            // 而这时前段的转写与抽帧已经花掉了真实成本和时间。
+            // 重试一次；仍失败就当作「没有额外建议」，由确定性校验独立裁决。
+            log.warn("job {} 的 Critic 返回非结构化内容，重试一次", request.jobId());
+            modelView = ContextRenderer.parseCritique(
+                    ask(prompts.get("system"), user + JSON_RETRY_SUFFIX, 0.0, 900, "critic-retry"));
+        }
+        if (modelView == null) {
+            log.warn("job {} 的 Critic 两次都无法解析，本轮跳过模型意见，只保留确定性校验", request.jobId());
+            modelView = AgentModels.Critique.pass();
         }
         EvidenceValidator.Outcome hard = EvidenceValidator.verify(draft, segments, visuals,
                 request.mode().sectionKeys());
