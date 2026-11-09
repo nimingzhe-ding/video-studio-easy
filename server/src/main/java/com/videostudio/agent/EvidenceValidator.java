@@ -32,6 +32,8 @@ public final class EvidenceValidator {
      * 阈值定高了会把短句证据全部判死。
      */
     private static final int MIN_QUOTE_CHARS = 2;
+    /** OCR 帧与模型引用时间点之间允许的最大偏差：模型倾向写整分钟，而帧时间不规则 */
+    private static final long VISUAL_TOLERANCE_MS = 30_000;
     /** 允许模型引用比原文少 / 多出的比例，用于容忍概括与轻微补全 */
     private static final double QUOTE_TOLERANCE = 0.35;
 
@@ -107,8 +109,10 @@ public final class EvidenceValidator {
             }
         }
 
-        // 证据级校验
+        // 证据级校验：单条失败记为质量问题，不再直接判整体不通过。
+        // 只有「一条都核验不了」才说明产物是凭空编的，那才是硬失败。
         List<AgentModels.Evidence> supported = new ArrayList<>();
+        int totalEvidence = draft.evidence().size();
         for (AgentModels.Evidence evidence : draft.evidence()) {
             String source = evidence.source() == null ? "" : evidence.source().toUpperCase(Locale.ROOT);
             if (!source.contains("ASR") && !source.contains("OCR") && !source.contains("VISION")) {
@@ -139,30 +143,40 @@ public final class EvidenceValidator {
             supported.add(evidence);
         }
 
-        // 结论级校验：每条结论至少有一条 claim 与其一致、且已核验通过。
-        // 用「互相包含」而不是「精确相等」：模型几乎总会把 claim 写得更完整或更简略
-        // （「X 是 Y」→「X 是 Y，因为 Z」），精确相等会把正确报告系统性判死。
+        // 结论级校验：同样降为质量信号。
+        // 用「互相包含」而不是「精确相等」：模型几乎总会把 claim 写得更完整或更简略。
+        int unsupportedConclusions = 0;
         for (String conclusion : draft.conclusions()) {
             String target = normalize(conclusion);
             boolean ok = supported.stream().anyMatch(e -> relates(normalize(e.claim()), target));
             if (!ok) {
+                unsupportedConclusions++;
                 problems.add("结论缺少可核验证据：" + Texts.truncate(conclusion, 60));
             }
         }
 
-        if (!supported.isEmpty()) {
-            for (String conclusion : draft.conclusions()) {
-                if (normalize(conclusion).isEmpty()) {
-                    problems.add("存在空结论");
-                    break;
-                }
+        for (String conclusion : draft.conclusions()) {
+            if (normalize(conclusion).isEmpty()) {
+                problems.add("存在空结论");
+                break;
             }
         }
 
-        if (problems.isEmpty()) {
-            return new Outcome(true, List.of(), List.of());
+        // 硬门槛只有一条：全部证据都无法核验。
+        // 这说明产物与素材没有实质关联（模型在编），不能发布。
+        // 部分失败是常态——模型引用时间点有偏差、把 OCR 乱码当 ASR，
+        // 这些写进审阅意见让人核对，但不该让整份报告作废。
+        boolean everythingFabricated = totalEvidence > 0 && supported.isEmpty();
+        // 结构性问题仍然是硬失败：缺小节、空结论
+        boolean structurallyBroken = problems.stream().anyMatch(p ->
+                p.startsWith("缺少必需小节") || p.startsWith("存在空结论")
+                        || p.startsWith("证据来源不合法"));
+
+        if (everythingFabricated) {
+            problems.add(0, "全部证据都无法在原始素材中核验，产物可能不是基于该素材生成");
         }
-        return new Outcome(false, List.copyOf(problems), List.copyOf(failingTimestamps));
+        boolean passed = !everythingFabricated && !structurallyBroken;
+        return new Outcome(passed, List.copyOf(problems), List.copyOf(failingTimestamps));
     }
 
     /**
@@ -225,13 +239,27 @@ public final class EvidenceValidator {
         return null;
     }
 
+    /**
+     * OCR 证据只覆盖某一帧，模型不可能精确复现帧时间。
+     *
+     * <p>容差从 ±2s 放宽到 ±30s 并取<b>最近</b>的一帧：实测 10 分钟视频会抽出近 200 帧，
+     * 平均 3 秒一帧，而模型倾向写整分钟（120000）——最近的帧可能是 119000 或 121500，
+     * 硬卡 2 秒会让引用正确文字的结论也被判「时间戳不存在」。
+     *
+     * <p>放宽时间不等于放宽内容：{@code quotes} 仍要求 OCR 原文能对上，
+     * 写错时间点但引对文字的条目仍会被接受，这是有意的取舍——证明「这句话来自原片」比
+     * 「模型记对了秒数」更重要。
+     */
     private static VisualEvidence findVisual(List<VisualEvidence> visuals, long ts) {
+        VisualEvidence nearest = null;
+        long best = Long.MAX_VALUE;
         for (VisualEvidence visual : visuals) {
-            // OCR 只覆盖某一帧，允许 ±2s 的时间误差
-            if (Math.abs(visual.timeMs() - ts) <= 2_000) {
-                return visual;
+            long distance = Math.abs(visual.timeMs() - ts);
+            if (distance <= VISUAL_TOLERANCE_MS && distance < best) {
+                best = distance;
+                nearest = visual;
             }
         }
-        return null;
+        return nearest;
     }
 }
