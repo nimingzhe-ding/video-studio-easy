@@ -65,4 +65,4 @@ npm run test:e2e
 
 后端覆盖鉴权、CSRF、越权访问、队列投递与重复消费、模型失败、索引错误和预算控制。MySQL / Redis 集成测试需要 Docker；无法连接 Docker 时会显式跳过。前端浏览器测试通过测试专用 HTTP 响应检查登录与会话流程，不调用模型服务。
 
-文档：[架构](docs/architecture.md) · [API](docs/api.md) · [部署](docs/deployment.md) · [与 DOVideo-AI 的对比](docs/comparison.md)
+文档：[架构](docs/architecture.md) · [API](docs/api.md) · [部署](docs/deployment.md) · [与 DOVideo-AI 的对比](docs/comparison.md) · [真实报告样例](docs/samples/)
