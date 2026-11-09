@@ -67,10 +67,16 @@ public final class ContextRenderer {
             sb.append("- （另有 %d 个分块概要因篇幅省略）\n".formatted(skippedChunks));
         }
 
-        sb.append("\n== 原始证据片段 ==\n");
+        sb.append("\n== 证据时间轴（语音与画面在同一时间窗口内对齐）==\n");
+        sb.append("每条前面的时间就是 evidence.timestampMs 应填的值，请直接复制，不要估算。\n\n");
         int taken = 0;
         int skipped = 0;
         int maxSegments = Math.max(1, props.getMaxEvidenceSegments() * 4);
+        // 按 ASR 片段切窗口，把该窗口内的 OCR 一并放进同一块。
+        // 为什么合并：分成「语音段落」和「画面段落」两节时，模型看到两套互不相干的时间戳，
+        // 引用时容易把某一帧的 OCR 文字挂到整分钟的 ASR 时间点上，校验必然对不上。
+        // 合并后一个窗口内同时有「[02:00 - 03:00] 语音」和「[02:03] 画面」，语义关系一目了然。
+        List<VisualEvidence> remainingVisuals = new ArrayList<>(retrieved.visuals());
         for (TranscriptSegment segment : retrieved.segments()) {
             if (taken >= maxSegments) {
                 skipped++;
@@ -80,11 +86,26 @@ public final class ContextRenderer {
             if (text.isBlank()) {
                 continue;
             }
-            // 说话人写在来源之后：「[00:12 - 00:20] ASR（讲者 A）: 正文」。
-            // 这样既能让模型写出「谁提出了什么」，又不改变 ASR 前缀的位置，
-            // 已有一切按「ASR: 」切分的逻辑都不用动。
             String who = Texts.isBlank(segment.speaker()) ? "ASR" : "ASR（" + segment.speaker() + "）";
-            String block = "- %s %s: %s%n".formatted(segment.bracket(), who, text);
+            StringBuilder block = new StringBuilder();
+            block.append("- %s %s: %s\n".formatted(segment.bracket(), who, text));
+            // 该窗口内的画面证据紧跟在语音下面，时间点用 OCR 自己的精确时刻
+            List<VisualEvidence> inWindow = new ArrayList<>();
+            for (VisualEvidence visual : remainingVisuals) {
+                if (visual.timeMs() >= segment.startMs() && visual.timeMs() < segment.endMs()) {
+                    inWindow.add(visual);
+                }
+            }
+            remainingVisuals.removeAll(inWindow);
+            for (VisualEvidence visual : inWindow) {
+                boolean fromCaption = Texts.isBlank(visual.ocrText());
+                String ocr = fromCaption ? visual.caption() : visual.ocrText();
+                if (Texts.isBlank(ocr)) {
+                    continue;
+                }
+                block.append("    · %s %s: %s\n".formatted(visual.bracket(),
+                        fromCaption ? "VISION" : "OCR", Texts.oneLine(ocr, 300)));
+            }
             if (sb.length() + block.length() > budget) {
                 skipped++;
                 continue;
@@ -93,13 +114,13 @@ public final class ContextRenderer {
             taken++;
         }
         if (skipped > 0) {
-            sb.append("- （另有 %d 条片段因篇幅或条数上限省略）%n".formatted(skipped));
+            sb.append("- （另有 %d 条片段因篇幅或条数上限省略）\n".formatted(skipped));
         }
-
-        if (!retrieved.visuals().isEmpty()) {
-            sb.append("\n== 画面文字（OCR）与画面描述（VISION）==\n");
+        // 没有落在任何 ASR 窗口里的画面证据（例如纯画面视频）单独列出
+        if (!remainingVisuals.isEmpty()) {
+            sb.append("\n== 无对应语音的画面文字 ==\n");
             int skippedVisuals = 0;
-            for (VisualEvidence visual : retrieved.visuals()) {
+            for (VisualEvidence visual : remainingVisuals) {
                 boolean fromCaption = Texts.isBlank(visual.ocrText());
                 String text = fromCaption ? visual.caption() : visual.ocrText();
                 if (Texts.isBlank(text)) {
