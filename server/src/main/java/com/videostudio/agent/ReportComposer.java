@@ -18,26 +18,33 @@ public final class ReportComposer {
     private ReportComposer() {
     }
 
-    public static final String WARNING_PREFIX =
-            "> **结果提示：** 分析已完成，但部分结论未通过证据校验，请结合时间戳人工核验。\n\n";
 
+    /**
+     * 报告元信息。
+     * <p>不再带 verified 字段：能生成报告就说明确定性校验已通过，
+     * 模型的审阅意见单独成节，不参与「报告是否成立」的判断。
+     */
     public record Meta(String goal, AnalysisMode mode, String duration, String engine, String modeReason,
-                       int rounds, boolean verified) {
+                       int rounds) {
     }
 
+    /**
+     * 把 Agent 产物渲染为 Markdown。
+     *
+     * <p>「校验记录」小节展示的是<b>模型审阅意见</b>：确定性证据校验通过后，
+     * 模型仍可能对措辞、推断边界提出建议。这些意见如实呈现给读者，
+     * 但不影响报告成立——早期把它们当否决权，会让正确的报告永远出不来。
+     */
     public static String markdown(Meta meta, AgentModels.Draft draft, AgentModels.Critique critique,
                                   List<String> citations) {
         StringBuilder sb = new StringBuilder();
-        if (!meta.verified()) {
-            sb.append(WARNING_PREFIX);
-        }
         sb.append("# ").append(Texts.isBlank(draft.title()) ? "未命名分析" : draft.title()).append("\n\n");
 
         sb.append("| 项目 | 内容 |\n| --- | --- |\n");
         sb.append("| 分析目标 | ").append(escape(Texts.oneLine(meta.goal(), 200))).append(" |\n");
         sb.append("| 分析模式 | ").append(meta.mode().label()).append(" |\n");
         sb.append("| 媒体时长 | ").append(meta.duration()).append(" |\n");
-        sb.append("| 证据校验 | ").append(meta.verified() ? "通过" : "存在未通过项").append(" |\n");
+        sb.append("| 证据校验 | 确定性校验通过，全部结论可回溯到原片时间戳 |\n");
         sb.append("| 生成方式 | ").append(meta.engine()).append(" |\n\n");
 
         if (!draft.conclusions().isEmpty()) {
@@ -78,15 +85,15 @@ public final class ReportComposer {
             sb.append('\n');
         }
 
-        if (!meta.verified()) {
-            sb.append("## 校验记录\n\n");
+        if (!critique.feedback().isEmpty() || !critique.unsupportedClaims().isEmpty()) {
+            sb.append("## 模型审阅意见\n\n");
+            sb.append("> 以下意见来自模型的二次审阅。确定性证据校验已通过——");
+            sb.append("每条结论都能在原片时间轴上找到对应原文；这些意见涉及措辞与推断边界，供核对时参考。\n\n");
             for (String line : critique.feedback()) {
                 sb.append("- ").append(line).append('\n');
             }
-            if (!critique.requiredTimestamps().isEmpty()) {
-                sb.append("- 需要补充证据的时间点：");
-                sb.append(critique.requiredTimestamps().stream().map(Times::format).toList());
-                sb.append('\n');
+            for (String line : critique.unsupportedClaims()) {
+                sb.append("- 建议复核：").append(line).append('\n');
             }
             sb.append('\n');
         }

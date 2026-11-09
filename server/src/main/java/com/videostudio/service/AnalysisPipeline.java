@@ -431,20 +431,24 @@ public class AnalysisPipeline {
         run.stage(JobStage.PLAN, "规划分析提纲");
         AnalysisAgent.Outcome outcome = agent.run(request, message ->
                 run.emit(JobStage.EXECUTE, JobEvent.TYPE_LOG, "info", JobStage.EXECUTE.floor(), message));
+        // 能走到这里说明确定性校验已通过；模型可能仍有措辞层面的建议，如实展示
+        boolean modelHadNotes = !outcome.critique().feedback().isEmpty()
+                || !outcome.critique().unsupportedClaims().isEmpty();
         run.emit(JobStage.CRITIC, JobEvent.TYPE_METRIC, "info", JobStage.CRITIC.floor(),
-                "证据校验：" + (outcome.critique().passed() ? "通过" : "存在未通过项")
-                        + "（%d 轮）".formatted(outcome.rounds()));
+                "证据校验：通过（%d 轮）%s".formatted(outcome.rounds(),
+                        modelHadNotes ? "，模型另有 %d 条改进建议".formatted(
+                                outcome.critique().feedback().size()
+                                        + outcome.critique().unsupportedClaims().size()) : ""));
 
         // ---- 文档
         run.stage(JobStage.REPORT, "生成分析报告");
         AgentModels.Draft draft = outcome.draft();
         List<String> citations = ReportComposer.citations(draft);
-        boolean verified = outcome.critique().passed();
         String markdown = ReportComposer.markdown(
                 new ReportComposer.Meta(job.focus(), outcome.mode(), Times.human(run.durationMs),
                         describeEngine(asrEngine, visuals.size(), captionCount(visuals)),
                         Texts.isBlank(job.modeReason()) ? outcome.modeReason() : job.modeReason(),
-                        outcome.rounds(), verified),
+                        outcome.rounds()),
                 draft, outcome.critique(), citations);
 
         Path docx = storage.reportDocx(asset.id(), run.jobId);
@@ -458,7 +462,9 @@ public class AnalysisPipeline {
             trace.put("visualEngine", visualEngine);
         }
         trace.put("rounds", outcome.rounds());
-        trace.put("verified", verified);
+        // 能走到这里说明确定性校验已通过；模型意见单独记录，供比对提示词效果
+        trace.put("verified", true);
+        trace.put("modelReviewNotes", modelHadNotes);
         trace.put("mode", outcome.mode().code());
         if (!Texts.isBlank(job.modeSource())) {
             trace.put("modeSource", job.modeSource());
