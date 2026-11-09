@@ -39,13 +39,15 @@ public class MediaIngestService {
     private final MediaProbe probe;
     private final Storage storage;
     private final MediaObjects objects;
+    private final YtDlpDownloader downloader;
 
     public MediaIngestService(MediaRepository mediaRepository, MediaProbe probe, Storage storage,
-                              MediaObjects objects) {
+                              MediaObjects objects, YtDlpDownloader downloader) {
         this.mediaRepository = mediaRepository;
         this.probe = probe;
         this.storage = storage;
         this.objects = objects;
+        this.downloader = downloader;
     }
 
     public Optional<MediaAsset> findAsset(long id) {
@@ -108,6 +110,62 @@ public class MediaIngestService {
         MediaAsset placeholder = new MediaAsset(0, name, kind, size, 0, null, null, null,
                 null, null, "", null, null, null, java.time.Instant.now());
         return mediaRepository.insert(placeholder);
+    }
+
+    /**
+     * 从网页链接导入：下载 → 探测 → 入库。
+     *
+     * <p>保存的文件名来自链接的主机与标题，而不是 yt-dlp 的随机名——
+     * 用户在素材列表里要能认出这是哪条视频。下载文件是临时工作副本，
+     * 入库（含上传到对象存储）完成后立即删除。
+     */
+    public MediaAsset ingestUrl(String url) {
+        if (!downloader.enabled()) {
+            throw new ApiException("未配置 yt-dlp，无法从链接导入视频");
+        }
+        String name = sourceName(url);
+        YtDlpDownloader.Downloaded downloaded =
+                downloader.download(url, storage.root().resolve("url-import"));
+        try {
+            Path temp = downloaded.file();
+            long size = downloaded.bytes();
+            long id = createPlaceholder(name, MediaKind.of(name, null), size);
+            Path target = storage.sourceFile(id, name);
+            try {
+                Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING);
+            } catch (IOException moveFailed) {
+                // 跨盘时退化成拷贝
+                try {
+                    Files.copy(temp, target, StandardCopyOption.REPLACE_EXISTING);
+                } catch (IOException e) {
+                    mediaRepository.delete(id);
+                    throw new IllegalStateException("写入媒体文件失败: " + e.getMessage(), e);
+                }
+            }
+            return finish(id, name, target);
+        } finally {
+            // 临时文件只是搬运工，内容已经在媒体目录与对象存储里
+            try {
+                Files.deleteIfExists(downloaded.file());
+            } catch (IOException ignored) {
+                log.warn("临时下载文件清理失败: {}", downloaded.file());
+            }
+        }
+    }
+
+    /** 由链接派生一个用户能看懂的文件名，扩展名固定 mp4 */
+    private static String sourceName(String url) {
+        String host;
+        try {
+            host = java.net.URI.create(url.strip()).getHost();
+        } catch (RuntimeException e) {
+            host = null;
+        }
+        String stamp = java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")
+                .format(java.time.LocalDateTime.now());
+        String base = (host == null || host.isBlank() ? "web" : host.replaceAll("[^A-Za-z0-9.-]", "-"))
+                + "-" + stamp;
+        return base.length() > 120 ? base.substring(0, 120) + ".mp4" : base + ".mp4";
     }
 
     /** 回写路径 → 探测 → 回写派生字段，两条入口共用 */

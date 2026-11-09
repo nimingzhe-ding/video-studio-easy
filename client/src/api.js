@@ -136,6 +136,9 @@ export const api = {
     });
   },
 
+  /** 从网页链接导入（B 站、YouTube 等，需服务端装有 yt-dlp） */
+  importUrl: (url) => request('/api/media/from-url', json({ url })),
+
   uploadPolicy: () => request('/api/uploads/policy'),
   uploadStatus: (uploadId) => request(`/api/uploads/${encodeURIComponent(uploadId)}`),
   cancelUpload: (uploadId) => request(`/api/uploads/${encodeURIComponent(uploadId)}`, { method: 'DELETE' }),

@@ -50,6 +50,8 @@ const form = reactive({ mode: 'AUTO', goal: '', title: '' });
  */
 const isAdmin = computed(() => props.account?.role === 'ADMIN');
 const deliveries = ref([]);
+/** 链接导入：B 站 / YouTube 等，需服务端装有 yt-dlp */
+const urlImport = reactive({ open: false, url: '', busy: false });
 
 /**
  * 可选模式：清单来自后端注册表（runtime.modes），新增模式不需要前端发版。
@@ -283,6 +285,32 @@ function attachStream(id) {
       }, 3000);
     }
   });
+}
+
+/**
+ * 从网页链接导入视频。
+ * <p>请求会阻塞到下载完成（几十秒到几分钟），所以用 busy 状态锁住输入并给出提示，
+ * 避免用户重复提交。
+ */
+async function submitUrlImport() {
+  const url = urlImport.url.trim();
+  if (!url) {
+    notify('请粘贴视频链接', 'warn');
+    return;
+  }
+  urlImport.busy = true;
+  try {
+    const asset = await api.importUrl(url);
+    notify(`已导入「${asset.name}」，时长 ${formatDuration(asset.durationMs)}`, 'ok');
+    media.value = (await api.listMedia(100)) || [];
+    activeAssetId.value = asset.id;
+    urlImport.url = '';
+    urlImport.open = false;
+  } catch (e) {
+    notify(e.message, 'err');
+  } finally {
+    urlImport.busy = false;
+  }
 }
 
 function pickFile() {
@@ -589,6 +617,29 @@ async function retryCurrentJob() {
             </div>
             <div v-if="upload.active" class="tape" style="margin-top: 10px; width: 100%">
               <i :style="{ width: `${upload.percent}%` }" />
+            </div>
+          </div>
+
+          <div v-if="runtime.urlImportEnabled" style="margin-top: 10px">
+            <button
+              v-if="!urlImport.open"
+              class="ghost small"
+              type="button"
+              @click="urlImport.open = true"
+            >或用链接导入（B 站 / YouTube）</button>
+            <div v-else class="stack" style="gap: 6px">
+              <input
+                v-model="urlImport.url"
+                type="url"
+                placeholder="粘贴视频链接"
+                :disabled="urlImport.busy"
+                @keyup.enter="submitUrlImport"
+              />
+              <div class="row">
+                <span class="hint grow">{{ urlImport.busy ? '正在下载，请稍候…' : '下载完成后会自动入库' }}</span>
+                <button class="ghost small" type="button" :disabled="urlImport.busy" @click="urlImport.open = false">取消</button>
+                <button class="primary small" type="button" :disabled="urlImport.busy" @click="submitUrlImport">导入</button>
+              </div>
             </div>
           </div>
 

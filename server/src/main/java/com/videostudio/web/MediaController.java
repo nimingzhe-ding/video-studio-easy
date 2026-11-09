@@ -14,6 +14,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
@@ -50,6 +51,27 @@ public class MediaController {
         limiter.require("rate:upload:user:" + request.getUserPrincipal().getName(), rateLimits.getUploadPerMinute(),
                 java.time.Duration.ofMinutes(1), "上传过于频繁");
         return ApiResponse.success(ingestService.ingest(file));
+    }
+
+    /**
+     * 从网页链接导入视频（B 站、YouTube 等，由 yt-dlp 支持）。
+     *
+     * <p>下载在请求线程里同步完成：一条 10 分钟的视频通常几十秒到几分钟，
+     * 比让前端轮询一个异步任务简单。上传与链接导入共用同一套限流与入库逻辑，
+     * 因此限流键保持按账户计算。
+     */
+    @PostMapping("/from-url")
+    public ApiResponse<MediaAsset> importUrl(@RequestBody UrlRequest body,
+                                             jakarta.servlet.http.HttpServletRequest request) {
+        limiter.require("rate:upload:user:" + request.getUserPrincipal().getName(),
+                rateLimits.getUploadPerMinute(), java.time.Duration.ofMinutes(1), "导入过于频繁");
+        if (body == null || body.url() == null || body.url().isBlank()) {
+            throw new ApiException("请提供视频链接");
+        }
+        return ApiResponse.success(ingestService.ingestUrl(body.url()));
+    }
+
+    public record UrlRequest(String url) {
     }
 
     @GetMapping

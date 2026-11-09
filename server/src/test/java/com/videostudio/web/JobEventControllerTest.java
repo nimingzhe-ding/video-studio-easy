@@ -43,7 +43,8 @@ class JobEventControllerTest {
     private JobEventController controller() {
         return new JobEventController(jobs, events, mock(AiProperties.class), mock(RealtimeProperties.class),
                 mock(MediaObjects.class), mock(VectorStore.class), bus, mock(RedisSupport.class),
-                new com.videostudio.agent.ModeRegistry(""));
+                new com.videostudio.agent.ModeRegistry(""),
+                mock(com.videostudio.media.YtDlpDownloader.class));
     }
 
     private AnalysisJob runningJob() {
