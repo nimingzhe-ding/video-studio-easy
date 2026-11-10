@@ -10,6 +10,37 @@
 - POST /api/auth/logout：清除会话；客户端重新取得 CSRF token。
 - POST /api/auth/register：仅部署启用注册时可用。用户名 3–64 位，密码 12–72 位。
 
+## 外部集成
+
+外部系统可以不用浏览器会话，改用 API 令牌调用同一套接口。
+
+- POST /api/integrations/tokens：{ name }，创建令牌。**明文只在这一次响应里返回**，服务端只存 SHA-256 摘要。
+- GET /api/integrations/tokens：列出当前账户的令牌（只返回可用于识别的前缀，不含明文）。
+- DELETE /api/integrations/tokens/{id}：撤销令牌。只标记时间戳，保留记录供审计。
+- POST /api/integrations/webhooks：{ url, events }，订阅任务终态。events 默认 `job.succeeded,job.failed`。
+- GET /api/integrations/webhooks、DELETE /api/integrations/webhooks/{id}。
+
+调用方式：
+
+~~~sh
+curl -H "Authorization: Bearer vst_xxx" https://your-host/api/jobs
+~~~
+
+令牌的作用域是它所属的账户：一个用户能做的事，他的令牌都能做。因此令牌泄露等同账号泄露，按需撤销。
+
+### Webhook 签名
+
+任务到达终态时，服务端向订阅地址 POST 一个 JSON，并带上 `X-VS-Signature: t=<秒级时间戳>,v1=<签名>`。签名是 HMAC-SHA256，密钥在创建 webhook 时生成并保存在库里。
+
+接收方验签步骤：
+
+1. 拼接待验字符串 `t + "." + 请求正文`
+2. 用密钥做 HMAC-SHA256，转十六进制
+3. 与 `v1` 比较
+4. 检查 `t` 与当前时间相差不大（建议 5 分钟内），防止旧请求被重放
+
+**只投递一次，失败不重试**。需要可靠送达的场景应轮询任务接口，而不是依赖回调。
+
 ## 管理员账户管理
 
 - GET /api/admin/users：列出账户，仅 ADMIN 可用。
