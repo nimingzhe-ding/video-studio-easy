@@ -4,6 +4,7 @@ import { api, CHUNK_THRESHOLD, chunkUploadId } from './api';
 import {
   MODE_LABELS,
   modeLabels,
+  modeOf,
   STAGE_LABELS,
   STATUS_LABELS,
   formatDateTime,
@@ -63,6 +64,15 @@ const modes = computed(() => {
   return [{ value: 'AUTO', label: '自动判断' }, ...source];
 });
 const labelOf = computed(() => modeLabels(runtime.value.modes));
+
+/**
+ * 任务上的 mode 现在是对象（code/label/guidance/…），历史数据仍可能是字符串。
+ * 直接用它当 map 的 key 会得到 undefined，界面就会把整个对象渲染成 JSON。
+ */
+const modeText = (mode) => {
+  const detail = modeOf(mode);
+  return labelOf.value[detail.code] || detail.label || detail.code || '';
+};
 
 const TABS = [
   { key: 'report', label: '报告' },
@@ -895,7 +905,7 @@ async function retryCurrentJob() {
               <div>
                 <dt>模式</dt>
                 <dd>
-                  {{ labelOf[job.mode] || job.mode }}
+                  {{ modeText(job.mode) }}
                   <span v-if="job.modeSource === 'AUTO'" style="color: var(--faint)"> / 模型判定</span>
                 </dd>
               </div>
@@ -969,7 +979,7 @@ async function retryCurrentJob() {
           </div>
 
           <div v-show="tab === 'chat'" class="sheet">
-            <ChatPanel :job-id="job.id" :mode="job.mode" @seek="seek" @notice="notify" />
+            <ChatPanel :job-id="job.id" :mode="modeOf(job.mode).code" @seek="seek" @notice="notify" />
           </div>
 
           <div v-show="tab === 'transcript'" class="sheet">
@@ -1020,7 +1030,7 @@ async function retryCurrentJob() {
                     <div class="item-title">{{ item.title || item.focus || '未命名分析' }}</div>
                     <div class="item-sub">
                       <span class="mono" style="font-size: 10.5px">#{{ String(item.id).padStart(3, '0') }}</span>
-                      · {{ labelOf[item.mode] || item.mode }} · {{ STATUS_LABELS[item.status] }} ·
+                      · {{ modeText(item.mode) }} · {{ STATUS_LABELS[item.status] }} ·
                       {{ formatDateTime(item.createdAt) }}
                     </div>
                   </div>

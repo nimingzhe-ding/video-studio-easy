@@ -1,6 +1,6 @@
 <script setup>
 import { computed } from 'vue';
-import { STAGE_LABELS, STATUS_LABELS, formatRelative } from '../format';
+import { STAGE_LABELS, STATUS_LABELS, formatRelative, modeOf } from '../format';
 
 const props = defineProps({
   job: { type: Object, required: true },
@@ -10,6 +10,12 @@ const props = defineProps({
   modeLabels: { type: Object, default: () => ({}) }
 });
 const emit = defineEmits(['open', 'cancel', 'remove']);
+
+/** mode 是对象（注册表驱动后），历史数据是字符串；统一取显示名 */
+const modeText = computed(() => {
+  const detail = modeOf(props.job.mode);
+  return props.modeLabels[detail.code] || detail.label || detail.code;
+});
 
 const statusClass = computed(() => {
   switch (props.job.status) {
@@ -48,7 +54,7 @@ const code = computed(() => `#${String(props.job.id).padStart(3, '0')}`);
       <div class="item-sub">
         <span class="mono" style="font-size: 10.5px">{{ code }}</span>
         <span class="sep">·</span>
-        <span>{{ modeLabels[job.mode] || job.mode }}</span>
+        <span>{{ modeText }}</span>
         <span class="sep">·</span>
         <span v-if="running">{{ stageText }} {{ job.progress }}%</span>
         <span v-else>{{ STATUS_LABELS[job.status] || job.status }}</span>

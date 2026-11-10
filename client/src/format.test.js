@@ -8,7 +8,8 @@ import {
   formatDuration,
   formatRelative,
   formatSize,
-  modeLabels
+  modeLabels,
+  modeOf
 } from './format.js';
 
 /**
@@ -86,4 +87,14 @@ test('modeLabels 忽略缺少 code 的脏数据', () => {
 
   assert.equal(merged.OK, '正常');
   assert.equal(merged.undefined, undefined);
+});
+
+test('modeOf 同时接受对象与字符串形式的模式', () => {
+  // 任务接口返回的是对象；历史数据与旧接口给的是字符串
+  assert.deepEqual(modeOf({ code: 'LEARNING', label: '学习笔记' }), { code: 'LEARNING', label: '学习笔记' });
+  assert.deepEqual(modeOf('LEARNING'), { code: 'LEARNING', label: MODE_LABELS.LEARNING });
+  // 对象缺 label 时用内置表兜底，再不行退回 code，避免界面出现 undefined
+  assert.deepEqual(modeOf({ code: 'REVIEW' }), { code: 'REVIEW', label: MODE_LABELS.REVIEW });
+  assert.deepEqual(modeOf({ code: 'CONTRACT' }), { code: 'CONTRACT', label: 'CONTRACT' });
+  assert.deepEqual(modeOf(null), { code: '', label: '' });
 });
