@@ -212,6 +212,14 @@ export const api = {
   deleteJob: (id) => request(`/api/jobs/${id}`, { method: 'DELETE' }),
   reanalyze: (id, payload) => request(`/api/jobs/${id}/reanalyze`, json(payload)),
 
+  /** 外部集成：API 令牌与 webhook 订阅 */
+  listTokens: () => request('/api/integrations/tokens'),
+  createToken: (name) => request('/api/integrations/tokens', json({ name })),
+  revokeToken: (id) => request(`/api/integrations/tokens/${id}`, { method: 'DELETE' }),
+  listWebhooks: () => request('/api/integrations/webhooks'),
+  createWebhook: (url, events) => request('/api/integrations/webhooks', json({ url, events })),
+  deleteWebhook: (id) => request(`/api/integrations/webhooks/${id}`, { method: 'DELETE' }),
+
   /** 管理端：重试耗尽后落库的失败投递。仅 ADMIN 角色可用 */
   failedDeliveries: (pendingOnly = true, limit = 50) =>
     request(`/api/admin/failed-deliveries?pendingOnly=${pendingOnly}&limit=${limit}`),

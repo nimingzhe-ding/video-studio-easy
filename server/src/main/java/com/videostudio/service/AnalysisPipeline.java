@@ -91,6 +91,8 @@ public class AnalysisPipeline {
     private final EvidenceService evidenceService;
     private final DocxExporter docxExporter;
     private final com.videostudio.agent.DraftEvaluator evaluator;
+    private final com.videostudio.webhook.WebhookService webhooks;
+    private final com.videostudio.infra.JobOwners jobOwners;
     private final Storage storage;
     private final MediaObjects objects;
     private final VectorStore vectors;
@@ -110,6 +112,8 @@ public class AnalysisPipeline {
                             VisualEvidenceService visualService, ChunkEnricher chunkEnricher,
                             AnalysisAgent agent, EvidenceService evidenceService, DocxExporter docxExporter,
                             com.videostudio.agent.DraftEvaluator evaluator,
+                            com.videostudio.webhook.WebhookService webhooks,
+                            com.videostudio.infra.JobOwners jobOwners,
                             Storage storage, MediaObjects objects, VectorStore vectors,
                             AgentProperties agentProps, AiProperties aiProps, AppProperties appProps,
                             JobEventBus eventBus, JobMetrics metrics, BudgetGuard budget,
@@ -131,6 +135,8 @@ public class AnalysisPipeline {
         this.evidenceService = evidenceService;
         this.docxExporter = docxExporter;
         this.evaluator = evaluator;
+        this.webhooks = webhooks;
+        this.jobOwners = jobOwners;
         this.storage = storage;
         this.objects = objects;
         this.vectors = vectors;
@@ -257,6 +263,7 @@ public class AnalysisPipeline {
         budget.enter(jobId);
         org.slf4j.MDC.put("jobId", Long.toString(jobId));
         String status = "failed";
+        String failureMessage = null;
         try {
             jobRepository.markRunning(jobId);
             execute(run, job, asset, source);
@@ -273,6 +280,7 @@ public class AnalysisPipeline {
             String message = Secrets.scrubOneLine(e.getMessage() == null ? e.toString() : e.getMessage(), 300);
             jobRepository.markFailed(jobId, message);
             run.emit(JobStage.FAILED, JobEvent.TYPE_ERROR, "error", 100, "分析失败：" + message);
+            failureMessage = message;
             throw new IllegalStateException(message,e);
         } finally {
             // 顺序很重要：先结算阶段耗时，再清上下文，最后回收记账
@@ -281,9 +289,28 @@ public class AnalysisPipeline {
                         java.time.Duration.between(run.stageStarted, java.time.Instant.now()));
             }
             metrics.jobFinished(job.mode().code(), status, java.time.Duration.between(started, java.time.Instant.now()));
+            // 外部系统靠这个知道任务结束。放在 finally：失败路径也要通知，
+            // 且投递本身是异步的，不会拖慢收尾。
+            notifyWebhooks(jobId, status, failureMessage);
             org.slf4j.MDC.remove("jobId");
             budget.leave();
             budget.end(jobId);
+        }
+    }
+
+    /**
+     * 通知订阅者任务结束。
+     *
+     * <p>归属用户查不到（历史数据未认领）时跳过：没有归属就没有订阅者可言。
+     * 通知失败只记日志，绝不影响任务本身的结果。
+     */
+    private void notifyWebhooks(long jobId, String status, String error) {
+        try {
+            long owner = jobOwners.ownerOf(jobId);
+            String terminal = "succeeded".equals(status) ? "SUCCEEDED" : "FAILED";
+            webhooks.notifyTerminal(jobId, owner, terminal, error);
+        } catch (RuntimeException ex) {
+            log.warn("任务 {} 的 webhook 通知失败: {}", jobId, ex.getMessage());
         }
     }
 
