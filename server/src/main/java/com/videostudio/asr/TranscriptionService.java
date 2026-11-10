@@ -105,7 +105,10 @@ public class TranscriptionService {
                 throw new IllegalStateException("语音识别被中断",e);
             } catch (ExecutionException e) {
                 futures.forEach(f -> f.cancel(true));
-                throw new IllegalStateException("语音片段识别失败，分析已停止",e.getCause());
+                // 把根因带进消息：只写「识别失败」会让用户分不清是配置错误、额度还是素材问题
+                Throwable cause = e.getCause() == null ? e : e.getCause();
+                throw new IllegalStateException("语音片段识别失败："
+                        + com.videostudio.common.Texts.oneLine(cause.getMessage(), 200), cause);
             }
         }
 
@@ -154,7 +157,10 @@ public class TranscriptionService {
             try { return Optional.of(cloud.transcribe(file)); }
             catch(RuntimeException ex) { last=ex; if(Thread.currentThread().isInterrupted()) throw ex; }
         }
-        throw new IllegalStateException("云端语音识别失败，请检查服务配置后重试",last);
+        // 只抛出「请检查配置」等于把 401、额度耗尽、模型下线都糊成一句话，用户无从下手；
+        // 把上游给出的原因（已脱敏）附在消息里，任务卡片才能直接显示可行动的信息。
+        String detail = last == null ? "" : "：" + com.videostudio.common.Secrets.scrubOneLine(last.getMessage(), 200);
+        throw new IllegalStateException("云端语音识别失败" + detail,last);
     }
 
     /** 合并过碎的片段：同一说话人的连续短句拼成一句，减少后续上下文里的噪声 */
