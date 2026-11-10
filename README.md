@@ -59,10 +59,17 @@ cd server
 mvn verify
 cd ../client
 npm ci
+npm test
 npm run build
 npm run test:e2e
+cd ../extension
+node --test detect.test.js
 ~~~
 
-后端覆盖鉴权、CSRF、越权访问、队列投递与重复消费、模型失败、索引错误和预算控制。MySQL / Redis 集成测试需要 Docker；无法连接 Docker 时会显式跳过。前端浏览器测试通过测试专用 HTTP 响应检查登录与会话流程，不调用模型服务。
+后端覆盖鉴权、CSRF、越权访问、队列投递与重复消费、模型失败、索引错误、证据校验边界和预算控制。MySQL / Redis 集成测试需要 Docker；无法连接 Docker 时会显式跳过。
+
+前端有单测与浏览器测试两层：单测跑纯函数（格式化、时间戳解析、上传标识派生、模式标签），不需要浏览器；浏览器测试通过测试专用 HTTP 响应检查登录与会话流程，不调用模型服务。扩展的链接识别规则同样有单测。
+
+真实环境的报告样例见 [docs/samples/](docs/samples/)。
 
 文档：[架构](docs/architecture.md) · [API](docs/api.md) · [部署](docs/deployment.md) · [与 DOVideo-AI 的对比](docs/comparison.md) · [真实报告样例](docs/samples/)
