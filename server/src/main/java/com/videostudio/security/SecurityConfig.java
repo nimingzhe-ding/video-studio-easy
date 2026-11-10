@@ -35,6 +35,16 @@ public class SecurityConfig {
             username.strip().toLowerCase(java.util.Locale.ROOT)).stream().findFirst()
                 .orElseThrow(() -> new UsernameNotFoundException("账号或密码错误"));
     }
+    /**
+     * 该请求是否用 API 令牌鉴权（{@code Authorization: Bearer ...}）。
+     * <p>只影响 CSRF 豁免：令牌由调用方显式放在请求头里，浏览器不会自动附加，
+     * 因此不存在「借用用户浏览器会话」的跨站伪造路径。
+     */
+    static boolean hasBearerToken(jakarta.servlet.http.HttpServletRequest request) {
+        String header = request.getHeader("Authorization");
+        return header != null && header.regionMatches(true, 0, "Bearer ", 0, 7);
+    }
+
     @Bean SecurityFilterChain security(HttpSecurity http, CookieCsrfTokenRepository csrf,
                                      HttpSessionSecurityContextRepository contexts,
                                      ApiTokenFilter tokenFilter) throws Exception {
@@ -44,6 +54,9 @@ public class SecurityConfig {
                 org.springframework.security.web.authentication.AnonymousAuthenticationFilter.class);
         return http.securityContext(c -> c.securityContextRepository(contexts))
             .csrf(c -> c.csrfTokenRepository(csrf)
+                // 带 Bearer 的请求不依赖浏览器会话：跨站请求无法自动附加 Authorization 头，
+                // 没有 CSRF 攻击面。若不放行，外部系统只能用令牌读、不能提交任务或建 Webhook。
+                .ignoringRequestMatchers(SecurityConfig::hasBearerToken)
                 .csrfTokenRequestHandler(new CsrfTokenRequestAttributeHandler()))
             .authorizeHttpRequests(a -> a.dispatcherTypeMatchers(DispatcherType.ASYNC, DispatcherType.ERROR).permitAll()
                 .requestMatchers("/api/auth/**", "/actuator/health/**").permitAll()

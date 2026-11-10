@@ -39,6 +39,14 @@ public class ApiExceptionHandler {
         return ResponseEntity.badRequest().body(ApiResponse.error(SafeErrors.message(e.getMessage(), 500)));
     }
 
+    @ExceptionHandler(org.springframework.http.converter.HttpMessageNotReadableException.class)
+    public ResponseEntity<ApiResponse<Void>> unreadable(
+            org.springframework.http.converter.HttpMessageNotReadableException e) {
+        // 请求体不是合法 JSON 属于调用方输入问题，返回 500 会让客户端误以为可以重试
+        log.debug("请求体无法解析", e);
+        return ResponseEntity.badRequest().body(ApiResponse.error("请求体不是合法的 JSON"));
+    }
+
     @ExceptionHandler({org.springframework.dao.DataAccessResourceFailureException.class,
         org.springframework.data.redis.RedisConnectionFailureException.class})
     public ResponseEntity<ApiResponse<Void>> unavailable(Exception e) {
