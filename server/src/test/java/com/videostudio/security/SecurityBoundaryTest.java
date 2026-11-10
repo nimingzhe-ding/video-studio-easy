@@ -27,6 +27,24 @@ class SecurityBoundaryTest {
     @Autowired MockMvc mvc;
     @MockBean JdbcTemplate jdbc;
     @MockBean RateLimiter limiter;
+    /**
+     * SecurityConfig 会注册令牌过滤器。切片测试里不能直接用 Mockito 替身——
+     * 默认 mock 不会调用 chain.doFilter，请求会被吃掉、整个鉴权链失效。
+     * 这里让它透传。
+     */
+    @MockBean ApiTokenFilter apiTokenFilter;
+
+    @org.junit.jupiter.api.BeforeEach
+    void passThroughTokenFilter() throws Exception {
+        org.mockito.Mockito.doAnswer(invocation -> {
+            jakarta.servlet.ServletRequest req = invocation.getArgument(0);
+            jakarta.servlet.ServletResponse res = invocation.getArgument(1);
+            jakarta.servlet.FilterChain chain = invocation.getArgument(2);
+            chain.doFilter(req, res);
+            return null;
+        }).when(apiTokenFilter).doFilter(org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+    }
     @RestController static class ProtectedReport {
         @GetMapping("/api/jobs/{id}/report") ApiResponse<?> report(@PathVariable long id) { return ApiResponse.success("private"); }
     }

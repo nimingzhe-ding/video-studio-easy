@@ -36,7 +36,12 @@ public class SecurityConfig {
                 .orElseThrow(() -> new UsernameNotFoundException("账号或密码错误"));
     }
     @Bean SecurityFilterChain security(HttpSecurity http, CookieCsrfTokenRepository csrf,
-                                     HttpSessionSecurityContextRepository contexts) throws Exception {
+                                     HttpSessionSecurityContextRepository contexts,
+                                     ApiTokenFilter tokenFilter) throws Exception {
+        // 令牌过滤器在匿名认证之前跑：带 Bearer 的请求以令牌身份为准，
+        // 而不是「碰巧带着的浏览器会话」
+        http.addFilterBefore(tokenFilter,
+                org.springframework.security.web.authentication.AnonymousAuthenticationFilter.class);
         return http.securityContext(c -> c.securityContextRepository(contexts))
             .csrf(c -> c.csrfTokenRepository(csrf)
                 .csrfTokenRequestHandler(new CsrfTokenRequestAttributeHandler()))
