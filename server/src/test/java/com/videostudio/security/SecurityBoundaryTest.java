@@ -27,6 +27,8 @@ class SecurityBoundaryTest {
     @Autowired MockMvc mvc;
     @MockBean JdbcTemplate jdbc;
     @MockBean RateLimiter limiter;
+    /** 合并时这段声明被 main 的同位置改动覆盖掉了，导致下面两处断言找不到变量 */
+    @MockBean com.videostudio.service.FailedDeliveryService deliveries;
     /**
      * SecurityConfig 会注册令牌过滤器。切片测试里不能直接用 Mockito 替身——
      * 默认 mock 不会调用 chain.doFilter，请求会被吃掉、整个鉴权链失效。
