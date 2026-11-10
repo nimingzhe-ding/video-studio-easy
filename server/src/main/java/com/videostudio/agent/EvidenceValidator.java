@@ -176,20 +176,27 @@ public final class EvidenceValidator {
             }
         }
 
-        // 硬门槛只有一条：全部证据都无法核验。
-        // 这说明产物与素材没有实质关联（模型在编），不能发布。
-        // 部分失败是常态——模型引用时间点有偏差、把 OCR 乱码当 ASR，
+        // 硬门槛只有两条，都针对「整份产物与素材没有实质关联」的情况：
+        //   1. 有证据但一条都核验不了 —— 模型在编；
+        //   2. 有结论但一条都找不到可核验证据 —— 同样是在编。
+        // 部分失败是常态（引用时间点有偏差、把 OCR 乱码当 ASR），
         // 这些写进审阅意见让人核对，但不该让整份报告作废。
         boolean everythingFabricated = totalEvidence > 0 && supported.isEmpty();
-        // 结构性问题仍然是硬失败：缺小节、空结论
+        boolean nothingSupported = !draft.conclusions().isEmpty()
+                && unsupportedConclusions == draft.conclusions().size();
+        // 结构性问题仍然是硬失败：缺小节、空结论，以及标题/结论/证据整体缺失
         boolean structurallyBroken = problems.stream().anyMatch(p ->
                 p.startsWith("缺少必需小节") || p.startsWith("存在空结论")
-                        || p.startsWith("证据来源不合法"));
+                        || p.startsWith("证据来源不合法") || p.startsWith("报告标题为空")
+                        || p.startsWith("报告缺少结论") || p.startsWith("报告缺少证据"));
 
         if (everythingFabricated) {
             problems.add(0, "全部证据都无法在原始素材中核验，产物可能不是基于该素材生成");
         }
-        boolean passed = !everythingFabricated && !structurallyBroken;
+        if (nothingSupported) {
+            problems.add(0, "全部结论都缺少可核验证据，产物可能不是基于该素材生成");
+        }
+        boolean passed = !everythingFabricated && !nothingSupported && !structurallyBroken;
         return new Outcome(passed, List.copyOf(problems), List.copyOf(failingTimestamps));
     }
 
