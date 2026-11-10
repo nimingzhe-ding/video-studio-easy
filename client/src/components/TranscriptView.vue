@@ -6,9 +6,13 @@ import { highlight } from '../markdown';
 
 const props = defineProps({
   jobId: { type: Number, required: true },
-  durationMs: { type: Number, default: 0 }
+  durationMs: { type: Number, default: 0 },
+  /** 任务状态：失败/取消时转写与画面本就不会产出，空状态不能说成「素材没有音轨」 */
+  jobStatus: { type: String, default: '' }
 });
 const emit = defineEmits(['seek', 'notice']);
+
+const jobFailed = computed(() => props.jobStatus === 'FAILED' || props.jobStatus === 'CANCELED');
 
 const loading = ref(false);
 const segments = ref([]);
@@ -129,8 +133,8 @@ function openImage(url) {
         <div v-if="!visibleSegments.length" class="empty">
           <template v-if="keyword">没有匹配「{{ keyword }}」的语音片段</template>
           <template v-else-if="!segments.length">
-            <strong>没有语音内容</strong>
-            该素材可能没有音轨，或语音识别未产出结果。
+            <strong>{{ jobFailed ? '任务未完成，没有转写' : '没有语音内容' }}</strong>
+            {{ jobFailed ? '任务失败或被取消，语音识别没有产出结果；原因见「执行日志」。' : '该素材可能没有音轨，或语音识别未产出结果。' }}
           </template>
         </div>
         <div v-for="(seg, index) in visibleSegments" :key="index" class="seg">
@@ -152,6 +156,9 @@ function openImage(url) {
       <div v-if="filter !== 'asr'">
         <div v-if="!visibleEvidence.length" class="empty">
           <template v-if="keyword">没有匹配「{{ keyword }}」的画面文字</template>
+          <template v-else-if="jobFailed">
+            <strong>任务未完成，没有画面文字</strong>任务失败或被取消，关键帧识别没有产出结果；原因见「执行日志」。
+          </template>
           <template v-else><strong>没有画面文字</strong>纯音频素材或画面中没有可识别文本。</template>
         </div>
         <div v-else class="evidence-grid">

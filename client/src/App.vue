@@ -966,7 +966,7 @@ async function retryCurrentJob() {
           </div>
 
           <div v-show="tab === 'transcript'" class="sheet">
-            <TranscriptView :job-id="job.id" :duration-ms="asset?.durationMs || 0" @seek="seek" @notice="notify" />
+            <TranscriptView :job-id="job.id" :duration-ms="asset?.durationMs || 0" :job-status="job.status" @seek="seek" @notice="notify" />
           </div>
 
           <div v-show="tab === 'log'" class="sheet">
