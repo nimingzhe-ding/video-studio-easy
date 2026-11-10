@@ -146,7 +146,11 @@ public class VisualEvidenceService {
                 throw new IllegalStateException("画面识别被中断",e);
             } catch (ExecutionException e) {
                 futures.forEach(f -> f.cancel(true));
-                throw new IllegalStateException("画面识别失败，分析已停止",e.getCause());
+                // 与语音识别一致：把「OCR 工具不可用」这类根因带进消息，否则用户只看到笼统的失败
+                Throwable cause = e.getCause() == null ? e : e.getCause();
+                String detail = cause.getMessage() == null ? ""
+                        : "：" + com.videostudio.common.Secrets.scrubOneLine(cause.getMessage(), 200);
+                throw new IllegalStateException("画面识别失败" + detail, cause);
             }
         }
 
