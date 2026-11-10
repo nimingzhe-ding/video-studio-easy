@@ -61,8 +61,8 @@ Compose 里的两个初始化步骤有隐式依赖，改动时不要删掉：
 
 升级前备份旧数据库、原始媒体和报告。新版本不会读取 H2，也不会自动将本地文件当作 S3 已存在的对象。
 
-- 全新部署：Flyway 从 V1 初始表结构开始，随后依次执行 V2 用户与发件箱、V3 失败投递重放标记、V4 存储清理发件箱与 V5 异常消息审计迁移。
-- 已有 MySQL：核对表结构与 V1 完全一致后，由运维明确将 Flyway baseline 设为版本 1，再顺序运行 V2 至 V5。默认不自动 baseline，以免错误接管其他库。
+- 全新部署：Flyway 从 V1 初始表结构开始，随后依次执行 V2 用户与发件箱、V3 失败投递重放标记、V4 API 令牌与 Webhook、V5 存储清理发件箱、V6 异常消息审计。
+- 已有 MySQL：核对表结构与 V1 完全一致后，由运维明确将 Flyway baseline 设为版本 1，再顺序运行 V2 至 V6。默认不自动 baseline，以免错误接管其他库。
 - 旧 H2：先将数据导出并核对导入 MySQL；不要直接将 H2 文件挂到新容器。
 - 为旧 media_asset 的 owner_id 明确指定归属用户。未归属的数据默认不可访问。
 - 上传原件为 assets/{assetId}/source{扩展名}；关键帧为 assets/{assetId}/frames/job-{jobId}/{文件名}；Word 为 assets/{assetId}/report/report-{jobId}.docx。核对文件大小与抽样下载后再更新数据库中的对象键。
@@ -71,6 +71,28 @@ Compose 里的两个初始化步骤有隐式依赖，改动时不要删掉：
 - 演示模式产生的历史报告可以保留归档，但不应当作新版本通过校验的报告。
 
 这些步骤涉及现有数据，需在目标环境明确执行；代码升级不会自动修改旧 H2 文件或推送历史数据。
+
+### 预发布分支的迁移版本修正
+
+预发布分支曾把「存储清理发件箱」「异常消息审计」编为 V4 / V5，而主线同期把 V4 给了 API 令牌与 Webhook。合并后两者的版本号冲突，预发布分支的两个迁移已改为 V5、V6（文件内容未变，校验和不变）。
+
+只跑过主线版本的环境无需处理。跑过预发布版本、且库里有数据要保留时，按下面步骤修正，**不要**直接重建数据库：
+
+~~~sql
+-- 先把 5 改成 6，再把 4 改成 5：顺序反了会在中转过程中撞上同一个 version
+UPDATE flyway_schema_history SET version = '6' WHERE version = '5' AND description = 'invalid message audit';
+UPDATE flyway_schema_history SET version = '5' WHERE version = '4' AND description = 'storage cleanup outbox';
+~~~
+
+改完后历史里只有 5 和 6，而 V4（API 令牌与 Webhook）还没执行，版本号比已应用的低。首次启动需要临时允许乱序执行：
+
+~~~properties
+spring.flyway.out-of-order=true
+~~~
+
+启动一次、确认 V4 已应用后立刻去掉该配置。长期开着会让旧迁移在不该执行的时候被执行。
+
+没有数据要保留的开发库，直接 `docker compose down --volumes` 重建更省事，也避免手工改历史表。
 
 ## 重试、死信与观察
 
