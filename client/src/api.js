@@ -136,6 +136,9 @@ export const api = {
     });
   },
 
+  /** 从网页链接导入（B 站、YouTube 等，需服务端装有 yt-dlp） */
+  importUrl: (url) => request('/api/media/from-url', json({ url })),
+
   uploadPolicy: () => request('/api/uploads/policy'),
   uploadStatus: (uploadId) => request(`/api/uploads/${encodeURIComponent(uploadId)}`),
   cancelUpload: (uploadId) => request(`/api/uploads/${encodeURIComponent(uploadId)}`, { method: 'DELETE' }),
@@ -209,7 +212,15 @@ export const api = {
   deleteJob: (id) => request(`/api/jobs/${id}`, { method: 'DELETE' }),
   reanalyze: (id, payload) => request(`/api/jobs/${id}/reanalyze`, json(payload)),
 
-  /** 管理端：失败任务与异常消息审计。仅 ADMIN 角色可用 */
+  /** 外部集成：API 令牌与 webhook 订阅 */
+  listTokens: () => request('/api/integrations/tokens'),
+  createToken: (name) => request('/api/integrations/tokens', json({ name })),
+  revokeToken: (id) => request(`/api/integrations/tokens/${id}`, { method: 'DELETE' }),
+  listWebhooks: () => request('/api/integrations/webhooks'),
+  createWebhook: (url, events) => request('/api/integrations/webhooks', json({ url, events })),
+  deleteWebhook: (id) => request(`/api/integrations/webhooks/${id}`, { method: 'DELETE' }),
+
+  /** 管理端：重试耗尽后落库的失败投递。仅 ADMIN 角色可用 */
   failedDeliveries: (pendingOnly = true, limit = 50) =>
     request(`/api/admin/failed-deliveries?pendingOnly=${pendingOnly}&limit=${limit}`),
   replayDelivery: (id) => request(`/api/admin/failed-deliveries/${id}/replay`, { method: 'POST' }),

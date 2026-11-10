@@ -53,12 +53,14 @@ public class JobEventController {
     private final JobEventBus eventBus;
     private final RedisSupport redis;
     private final com.videostudio.agent.ModeRegistry modeRegistry;
+    private final com.videostudio.media.YtDlpDownloader ytDlp;
 
     public JobEventController(JobRepository jobRepository, JobEventRepository eventRepository,
                               AiProperties ai, RealtimeProperties realtime,
                               MediaObjects objects, VectorStore vectors,
                               JobEventBus eventBus, RedisSupport redis,
-                              com.videostudio.agent.ModeRegistry modeRegistry) {
+                              com.videostudio.agent.ModeRegistry modeRegistry,
+                              com.videostudio.media.YtDlpDownloader ytDlp) {
         this.jobRepository = jobRepository;
         this.eventRepository = eventRepository;
         this.ai = ai;
@@ -68,6 +70,7 @@ public class JobEventController {
         this.eventBus = eventBus;
         this.redis = redis;
         this.modeRegistry = modeRegistry;
+        this.ytDlp = ytDlp;
     }
 
     @GetMapping("/{id}/stream")
@@ -196,6 +199,8 @@ public class JobEventController {
         info.put("status", JobStatus.values().length);
         // 模式清单同样来自注册表：前端据此渲染下拉框，新增模式不必改前端
         info.put("modes", modeRegistry.describe());
+        // 链接导入依赖宿主机的 yt-dlp，未安装时不显示入口
+        info.put("urlImportEnabled", ytDlp.enabled());
         return ApiResponse.success(info);
     }
 }

@@ -149,8 +149,8 @@ services:
       AI_API_KEY: ${AI_API_KEY:?Set AI_API_KEY}
       AI_BASE_URL: ${AI_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
       LLM_MODEL: ${LLM_MODEL:-qwen-plus}
-      ASR_URL: ${ASR_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1/audio/transcriptions}
-      ASR_MODEL: ${ASR_MODEL:-qwen-audio-asr}
+      ASR_URL: ${ASR_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions}
+      ASR_MODEL: ${ASR_MODEL:-qwen3-asr-flash}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-v3}
       EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
       EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}

@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>提交到 Video Studio</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <header>
+    <span class="brand">VIDEO STUDIO</span>
+    <button id="settings-toggle" class="ghost" type="button" title="设置服务地址">⚙</button>
+  </header>
+
+  <div id="settings" class="settings" hidden>
+    <label for="base-url">服务地址</label>
+    <input id="base-url" type="url" placeholder="http://127.0.0.1:9090" />
+    <p class="hint">需与浏览器能访问到的地址一致</p>
+  </div>
+
+  <main>
+    <div id="detect" class="detect">
+      <div id="detect-empty" class="empty">当前页面没有识别到视频链接</div>
+      <div id="detect-found" hidden>
+        <div class="label">识别到</div>
+        <div id="detected-url" class="url"></div>
+      </div>
+    </div>
+
+    <label for="goal">分析目标</label>
+    <textarea id="goal" rows="3" placeholder="例如：总结核心结论，给出时间戳证据"></textarea>
+
+    <button id="submit" class="primary" type="button">提交分析</button>
+    <div id="status" class="status" hidden></div>
+  </main>
+</body>
+</html>

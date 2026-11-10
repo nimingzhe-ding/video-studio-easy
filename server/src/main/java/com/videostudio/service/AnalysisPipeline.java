@@ -89,6 +89,9 @@ public class AnalysisPipeline {
     private final AnalysisAgent agent;
     private final EvidenceService evidenceService;
     private final DocxExporter docxExporter;
+    private final com.videostudio.agent.DraftEvaluator evaluator;
+    private final com.videostudio.webhook.WebhookService webhooks;
+    private final com.videostudio.infra.JobOwners jobOwners;
     private final Storage storage;
     private final MediaObjects objects;
     private final VectorStore vectors;
@@ -107,6 +110,9 @@ public class AnalysisPipeline {
                             FrameExtractor frameExtractor, TranscriptionService transcriptionService,
                             VisualEvidenceService visualService, ChunkEnricher chunkEnricher,
                             AnalysisAgent agent, EvidenceService evidenceService, DocxExporter docxExporter,
+                            com.videostudio.agent.DraftEvaluator evaluator,
+                            com.videostudio.webhook.WebhookService webhooks,
+                            com.videostudio.infra.JobOwners jobOwners,
                             Storage storage, MediaObjects objects, VectorStore vectors,
                             AgentProperties agentProps, AiProperties aiProps, AppProperties appProps,
                             JobEventBus eventBus, JobMetrics metrics, BudgetGuard budget,
@@ -127,6 +133,9 @@ public class AnalysisPipeline {
         this.agent = agent;
         this.evidenceService = evidenceService;
         this.docxExporter = docxExporter;
+        this.evaluator = evaluator;
+        this.webhooks = webhooks;
+        this.jobOwners = jobOwners;
         this.storage = storage;
         this.objects = objects;
         this.vectors = vectors;
@@ -254,6 +263,7 @@ public class AnalysisPipeline {
         budget.enter(jobId);
         org.slf4j.MDC.put("jobId", Long.toString(jobId));
         String status = "failed";
+        String failureMessage = null;
         try {
             jobRepository.markRunning(jobId);
             execute(run, job, asset, source);
@@ -268,6 +278,7 @@ public class AnalysisPipeline {
             String message = com.videostudio.common.SafeErrors.message(e.getMessage() == null ? e.toString() : e.getMessage(), 300);
             jobRepository.markFailed(jobId, message);
             run.emit(JobStage.FAILED, JobEvent.TYPE_ERROR, "error", 100, "分析失败：" + message);
+            failureMessage = message;
             throw new IllegalStateException(message,e);
         } finally {
             // 顺序很重要：先结算阶段耗时，再清上下文，最后回收记账
@@ -276,9 +287,28 @@ public class AnalysisPipeline {
                         java.time.Duration.between(run.stageStarted, java.time.Instant.now()));
             }
             metrics.jobFinished(job.mode().code(), status, java.time.Duration.between(started, java.time.Instant.now()));
+            // 外部系统靠这个知道任务结束。放在 finally：失败路径也要通知，
+            // 且投递本身是异步的，不会拖慢收尾。
+            notifyWebhooks(jobId, status, failureMessage);
             org.slf4j.MDC.remove("jobId");
             budget.leave();
             budget.end(jobId);
+        }
+    }
+
+    /**
+     * 通知订阅者任务结束。
+     *
+     * <p>归属用户查不到（历史数据未认领）时跳过：没有归属就没有订阅者可言。
+     * 通知失败只记日志，绝不影响任务本身的结果。
+     */
+    private void notifyWebhooks(long jobId, String status, String error) {
+        try {
+            long owner = jobOwners.ownerOf(jobId);
+            String terminal = "succeeded".equals(status) ? "SUCCEEDED" : "FAILED";
+            webhooks.notifyTerminal(jobId, owner, terminal, error);
+        } catch (RuntimeException ex) {
+            log.warn("任务 {} 的 webhook 通知失败: {}", jobId, ex.getMessage());
         }
     }
 
@@ -427,24 +457,26 @@ public class AnalysisPipeline {
         AnalysisAgent.Request request = new AnalysisAgent.Request(run.jobId, job.focus(), job.mode(),
                 transcripts, visuals, chunks, Times.human(run.durationMs));
         run.stage(JobStage.PLAN, "规划分析提纲");
-        AnalysisAgent.Outcome outcome = agent.run(request, message -> {
-            if(message.startsWith("检索降级：")) { run.degraded=true; run.warn(message); }
-            else run.emit(JobStage.EXECUTE, JobEvent.TYPE_LOG,"info",JobStage.EXECUTE.floor(),message);
-        });
+        AnalysisAgent.Outcome outcome = agent.run(request, message ->
+                run.emit(JobStage.EXECUTE, JobEvent.TYPE_LOG, "info", JobStage.EXECUTE.floor(), message));
+        // 能走到这里说明确定性校验已通过；模型可能仍有措辞层面的建议，如实展示
+        boolean modelHadNotes = !outcome.critique().feedback().isEmpty()
+                || !outcome.critique().unsupportedClaims().isEmpty();
         run.emit(JobStage.CRITIC, JobEvent.TYPE_METRIC, "info", JobStage.CRITIC.floor(),
-                "证据校验：" + (outcome.critique().passed() ? "通过" : "存在未通过项")
-                        + "（%d 轮）".formatted(outcome.rounds()));
+                "证据校验：通过（%d 轮）%s".formatted(outcome.rounds(),
+                        modelHadNotes ? "，模型另有 %d 条改进建议".formatted(
+                                outcome.critique().feedback().size()
+                                        + outcome.critique().unsupportedClaims().size()) : ""));
 
         // ---- 文档
         run.stage(JobStage.REPORT, "生成分析报告");
         AgentModels.Draft draft = outcome.draft();
         List<String> citations = ReportComposer.citations(draft);
-        boolean verified = outcome.critique().passed();
         String markdown = ReportComposer.markdown(
                 new ReportComposer.Meta(job.focus(), outcome.mode(), Times.human(run.durationMs),
                         describeEngine(asrEngine, visuals.size(), captionCount(visuals)),
                         Texts.isBlank(job.modeReason()) ? outcome.modeReason() : job.modeReason(),
-                        outcome.rounds(), verified),
+                        outcome.rounds()),
                 draft, outcome.critique(), citations);
 
         if(run.degraded) {
@@ -463,7 +495,9 @@ public class AnalysisPipeline {
             trace.put("visualEngine", visualEngine);
         }
         trace.put("rounds", outcome.rounds());
-        trace.put("verified", verified);
+        // 能走到这里说明确定性校验已通过；模型意见单独记录，供比对提示词效果
+        trace.put("verified", true);
+        trace.put("modelReviewNotes", modelHadNotes);
         trace.put("mode", outcome.mode().code());
         if (!Texts.isBlank(job.modeSource())) {
             trace.put("modeSource", job.modeSource());
@@ -491,6 +525,10 @@ public class AnalysisPipeline {
         if (!figures.isEmpty()) {
             trace.put("docxFigures", figures.size());
         }
+        // 质量评测：把可比较的数字留在 trace 里，
+        // 之后调提示词或检索权重时能直接和这次比，不用重跑一遍才知道变好还是变坏
+        var evaluation = evaluator.evaluate(draft, transcripts, visuals, List.of());
+        trace.put("evaluation", evaluation.asMap());
         trace.put("warnings", run.warnings);
         trace.put("llmEnabled", aiProps.cloudEnabled());
         if (run.degraded) {

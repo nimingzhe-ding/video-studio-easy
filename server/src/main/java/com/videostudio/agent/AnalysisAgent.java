@@ -106,11 +106,14 @@ public class AnalysisAgent {
                 throw new IllegalStateException("模型未返回有效的结构化产物");
             }
             progress.accept("第 %d 轮：证据校验".formatted(rounds));
-            critique = critique(request, plan, draft, evidenceSegments, evidenceVisuals);
-            if (critique.passed()) {
+            AgentModels.Critique raw = critique(request, plan, draft, evidenceSegments, evidenceVisuals);
+            // 模型的批评只作为「还值不值得改一轮」的信号，不决定任务成败。
+            // 实跑经验：它每轮都能挑出新的措辞问题，把它当否决权会让正确报告永远出不来。
+            critique = raw;
+            if (raw.passed()) {
                 break;
             }
-            log.info("job {} 第 {} 轮未通过校验：{}", request.jobId(), rounds, critique.feedback());
+            log.info("job {} 第 {} 轮模型提出建议：{}", request.jobId(), rounds, raw.feedback());
             if (rounds < maxRounds) {
                 // 校验不过不能只是「把批评再喂回去重写一遍」——模型缺的是证据，不是措辞。
                 // 这里按 Critic 指出的缺口去全量证据里回捞片段，并用缺口拼一次新的检索。
@@ -129,11 +132,17 @@ public class AnalysisAgent {
                 int added = evidenceSegments.size() + evidenceVisuals.size() - before;
                 log.info("job {} 第 {} 轮补充证据 {} 条（现有片段 {}、画面 {}）",
                         request.jobId(), rounds, added, evidenceSegments.size(), evidenceVisuals.size());
-                progress.accept("第 %d 轮未通过校验，补充 %d 条证据后重写".formatted(rounds, Math.max(0, added)));
+                progress.accept("第 %d 轮模型提出改进建议，补充 %d 条证据后重写".formatted(rounds, Math.max(0, added)));
             }
         }
 
-        if (draft == null || critique == null || !critique.passed()) {
+        // 只有「没有产物」或「确定性校验始终不过」才判任务失败。
+        // 循环里 raw.passed() 反映的是确定性校验结果——它为 false 时说明草稿里有
+        // 编造的证据或不存在的时间戳，这种草稿绝不能发布；模型的措辞建议则不会走到这里。
+        if (draft == null || draft.empty()) {
+            throw new IllegalStateException("模型未返回有效的结构化产物");
+        }
+        if (critique == null || !critique.passed()) {
             throw new IllegalStateException("分析未通过证据校验或已超时，请调整目标后重试");
         }
         return new Outcome(draft, critique, plan, mode, "", rounds, "agent/" + llmName());
@@ -185,15 +194,45 @@ public class AnalysisAgent {
         }
         user.append("\nVideoContext:\n").append(context);
 
-        String raw = ask(prompts.get("system"), prompts.get("executor") + "\n\n" + user, 0.3, 2_200, "execute");
+        // 2200 不够：10 分钟视频的产物包含十几条结论与证据，实测会被截断成半个 JSON，
+        // 而截断后的内容无法解析，表现为「模型未返回有效产物」——一个纯配额问题伪装成模型故障。
+        String raw = ask(prompts.get("system"), prompts.get("executor") + "\n\n" + user, 0.3, 4_096, "execute");
         AgentModels.Draft draft = ContextRenderer.parseDraft(raw);
         if (draft == null && previous == null) {
+            logDraftFailure(request.jobId(), "首次", raw);
             draft = ContextRenderer.parseDraft(ask(prompts.get("system"),
-                    prompts.get("executor") + "\n\n" + user + JSON_RETRY_SUFFIX, 0.1, 2_200, "execute-retry"));
+                    prompts.get("executor") + "\n\n" + user + JSON_RETRY_SUFFIX, 0.1, 4_096, "execute-retry"));
+            if (draft == null) {
+                logDraftFailure(request.jobId(), "重试", raw);
+            }
         }
         return draft;
     }
 
+    /**
+     * 产物解析失败时留下可诊断的线索。
+     *
+     * <p>「模型未返回有效产物」这个错误太笼统：它既可能是输出被 max_tokens 截断，
+     * 也可能是模型写了散文而没有 JSON。前者要调配额，后者要调提示词，
+     * 不给线索就只能靠猜。这里记录结尾片段与是否被截断。
+     */
+    private void logDraftFailure(long jobId, String which, String raw) {
+        if (raw == null) {
+            log.warn("job {} {}产物为空", jobId, which);
+            return;
+        }
+        String tail = raw.length() <= 300 ? raw : "…" + raw.substring(raw.length() - 300);
+        log.warn("job {} {}产物解析失败 len={} 疑似截断={} 尾部: {}",
+                jobId, which, raw.length(), !raw.stripTrailing().endsWith("}"), tail);
+    }
+
+    /**
+     * 一轮校验：模型 Critique + 确定性校验。
+     *
+     * <p>返回值的 {@code passed} 只反映<b>确定性校验</b>结果——模型的意见被保留在
+     * feedback 里用于下一轮改进，但不构成否决。理由见
+     * {@link EvidenceValidator#suggestions}。
+     */
     private AgentModels.Critique critique(Request request, AgentModels.Plan plan, AgentModels.Draft draft,
                                           List<TranscriptSegment> segments, List<VisualEvidence> visuals) {
         String context = renderContext(request.goal(), segments, visuals, request.chunks());
@@ -201,13 +240,25 @@ public class AnalysisAgent {
                 + "\n\nDraft:\n" + com.videostudio.common.Json.writePretty(draft)
                 + "\n\nVideoContext:\n" + context;
         String raw = ask(prompts.get("system"), user, 0.0, 900, "critic");
-        AgentModels.Critique critique = ContextRenderer.parseCritique(raw);
-        if (critique == null) {
-            throw new IllegalStateException("模型返回的证据校验结构不合法");
+        AgentModels.Critique modelView = ContextRenderer.parseCritique(raw);
+        if (modelView == null) {
+            // Critic 只是建议角色，它自己的输出格式坏掉不该拖垮整个任务：
+            // 长视频（3 分钟以上）上下文更大，模型返回非 JSON 的概率明显上升，
+            // 而这时前段的转写与抽帧已经花掉了真实成本和时间。
+            // 重试一次；仍失败就当作「没有额外建议」，由确定性校验独立裁决。
+            log.warn("job {} 的 Critic 返回非结构化内容，重试一次", request.jobId());
+            modelView = ContextRenderer.parseCritique(
+                    ask(prompts.get("system"), user + JSON_RETRY_SUFFIX, 0.0, 900, "critic-retry"));
         }
-        EvidenceValidator.Outcome outcome = EvidenceValidator.verify(draft, segments, visuals,
+        if (modelView == null) {
+            log.warn("job {} 的 Critic 两次都无法解析，本轮跳过模型意见，只保留确定性校验", request.jobId());
+            modelView = AgentModels.Critique.pass();
+        }
+        EvidenceValidator.Outcome hard = EvidenceValidator.verify(draft, segments, visuals,
                 request.mode().sectionKeys());
-        return EvidenceValidator.merge(critique, outcome);
+        // 确定性校验是唯一有否决权的一路；模型意见只并入 feedback
+        AgentModels.Critique merged = EvidenceValidator.merge(modelView, hard);
+        return hard.passed() ? EvidenceValidator.suggestions(merged) : merged;
     }
 
     // ------------------------------------------------------------------ 工具

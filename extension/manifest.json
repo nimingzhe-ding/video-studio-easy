@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "Video Studio",
+  "version": "0.1.0",
+  "description": "把当前页的视频链接提交给 Video Studio 分析，并查看进度与结论",
+  "permissions": ["tabs", "storage"],
+  "host_permissions": ["http://127.0.0.1:9090/*", "http://localhost:9090/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "提交到 Video Studio",
+    "default_popup": "popup.html"
+  }
+}
