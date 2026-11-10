@@ -90,6 +90,7 @@ public class AnalysisPipeline {
     private final AnalysisAgent agent;
     private final EvidenceService evidenceService;
     private final DocxExporter docxExporter;
+    private final com.videostudio.agent.DraftEvaluator evaluator;
     private final Storage storage;
     private final MediaObjects objects;
     private final VectorStore vectors;
@@ -108,6 +109,7 @@ public class AnalysisPipeline {
                             FrameExtractor frameExtractor, TranscriptionService transcriptionService,
                             VisualEvidenceService visualService, ChunkEnricher chunkEnricher,
                             AnalysisAgent agent, EvidenceService evidenceService, DocxExporter docxExporter,
+                            com.videostudio.agent.DraftEvaluator evaluator,
                             Storage storage, MediaObjects objects, VectorStore vectors,
                             AgentProperties agentProps, AiProperties aiProps, AppProperties appProps,
                             JobEventBus eventBus, JobMetrics metrics, BudgetGuard budget,
@@ -128,6 +130,7 @@ public class AnalysisPipeline {
         this.agent = agent;
         this.evidenceService = evidenceService;
         this.docxExporter = docxExporter;
+        this.evaluator = evaluator;
         this.storage = storage;
         this.objects = objects;
         this.vectors = vectors;
@@ -492,6 +495,10 @@ public class AnalysisPipeline {
         if (!figures.isEmpty()) {
             trace.put("docxFigures", figures.size());
         }
+        // 质量评测：把可比较的数字留在 trace 里，
+        // 之后调提示词或检索权重时能直接和这次比，不用重跑一遍才知道变好还是变坏
+        var evaluation = evaluator.evaluate(draft, transcripts, visuals, List.of());
+        trace.put("evaluation", evaluation.asMap());
         trace.put("warnings", run.warnings);
         trace.put("llmEnabled", aiProps.cloudEnabled());
         if (run.degraded) {
