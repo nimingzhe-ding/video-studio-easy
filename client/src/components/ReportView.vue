@@ -1,7 +1,7 @@
 <script setup>
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { api } from '../api';
-import { engineText, formatDuration, formatSize, MODE_LABELS } from '../format';
+import { engineText, formatDuration, formatSize, MODE_LABELS, modeOf } from '../format';
 import { anchorHeadings, outlineOf, renderMarkdown } from '../markdown';
 
 const props = defineProps({
@@ -15,6 +15,12 @@ const props = defineProps({
 });
 const emit = defineEmits(['seek', 'notice']);
 
+/** mode 是对象（注册表驱动后），历史数据是字符串；统一取显示名 */
+function modeLabelText(mode) {
+  const detail = modeOf(mode);
+  return props.modeLabels[detail.code] || MODE_LABELS[detail.code] || detail.label || detail.code;
+}
+
 const body = ref(null);
 const copied = ref(false);
 const toc = computed(() => outlineOf(props.report?.markdown || ''));
@@ -25,7 +31,7 @@ const meta = computed(() => {
   return {
     duration: props.asset ? formatDuration(props.asset.durationMs) : '',
     size: props.asset ? formatSize(props.asset.sizeBytes) : '',
-    mode: props.job ? (props.modeLabels[props.job.mode] || MODE_LABELS[props.job.mode] || props.job.mode) : '',
+    mode: props.job ? modeLabelText(props.job.mode) : '',
     engine: engineText(trace),
     asr: trace.asrEngine || '',
     rounds: trace.rounds,

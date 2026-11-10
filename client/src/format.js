@@ -94,6 +94,24 @@ export function modeLabels(runtimeModes) {
   return map;
 }
 
+/**
+ * 统一取出模式的 code 与显示名。
+ *
+ * <p>模式改成配置驱动后，任务的 mode 字段是对象（code/label/guidance/...），
+ * 而历史数据与旧接口给的是字符串。直接把它当 key 查表会得到 undefined，
+ * 界面就会把整个对象当文本渲染出来——所以读取侧统一走这里。
+ */
+export function modeOf(mode) {
+  if (!mode) {
+    return { code: '', label: '' };
+  }
+  if (typeof mode === 'string') {
+    return { code: mode, label: MODE_LABELS[mode] || mode };
+  }
+  const code = mode.code || '';
+  return { code, label: mode.label || MODE_LABELS[code] || code };
+}
+
 export const STATUS_LABELS = {
   PENDING: '排队中',
   RUNNING: '分析中',
