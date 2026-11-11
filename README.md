@@ -72,4 +72,4 @@ node --test detect.test.js
 
 真实环境的报告样例见 [docs/samples/](docs/samples/)。
 
-文档：[吃透本项目的深度导读](docs/deep-dive.md) · [架构](docs/architecture.md) · [API](docs/api.md) · [部署](docs/deployment.md) · [与 DOVideo-AI 的对比](docs/comparison.md) · [真实报告样例](docs/samples/)
+文档：[吃透本项目的深度导读](docs/deep-dive.md) · [面试导读：架构、组件与功能](docs/interview-guide.md) · [架构](docs/architecture.md) · [API](docs/api.md) · [部署](docs/deployment.md) · [与 DOVideo-AI 的对比](docs/comparison.md) · [真实报告样例](docs/samples/)
